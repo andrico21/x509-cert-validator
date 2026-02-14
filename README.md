@@ -22,13 +22,13 @@ $ openssl verify -verbose -CAfile ./root.crt -untrusted ./some-issuing-ca.crt -u
 
 ## Usage
 ```shell
-Usage of .\cert-validate.exe:
+Usage of ./x509-cert-validator:
   -aia
         Enable automatic AIA fetching
   -at string
         Optional: Validate at RFC3339 time
   -cert string
-        Path to Certificate PEM (required)
+        Path to Certificate PEM, HTTP URL (download), or HTTPS URL (live probe)
   -createCAbundle string
         Optional: Path to create/export the discovered CA bundle
   -crl
@@ -39,8 +39,47 @@ Usage of .\cert-validate.exe:
         Include Root CA in the generated bundle
   -root string
         Path to Root CA PEM (optional; uses System Roots if empty)
+  -showGraph
+        Display ASCII graph of the verified chain
+  -silent
+        Output only pass/fail status and cert ID
   -type string
         Validation type: server, client, or any (default "any")
+  -ultrasilent
+        No output, exit code only (0=Pass, 1=Fail)
+
+EXAMPLES:
+  1. Live HTTPS Probe (Check server's current chain):
+     cert-validate -cert https://github.com
+
+  2. Validate a Remote Certificate File (e.g., from an AIA URL):
+     cert-validate -cert http://cacerts.digicert.com/DigiCertGlobalG2TLSRSASHA2562020CA1-1.crt
+
+  3. Validation with Specific Constraints (-dns, -at, -type, -crl):
+     cert-validate -cert leaf.pem -dns example.com -at "2025-12-25T12:00:00Z"
+     cert-validate -cert client-cert.pem -type client
+     cert-validate -cert leaf.pem -crl
+
+  4. Fix Local Chain & Export Bundle:
+     cert-validate -cert leaf.pem -aia -createCAbundle full-chain.crt
+
+  5. Exporting Root CA (-includeRoot):
+     cert-validate -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot
+     (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)
+     (    Never install an unknown Root CA unless you know what you are doing)
+     (    and have verified its fingerprint manually.)
+     (    Trusting a malicious Root might lead to interception of your private data.)
+
+  6. Visualization:
+     cert-validate -cert leaf.pem -showGraph
+
+  7. Silent Mode (Short status line only):
+     cert-validate -cert leaf.pem -silent
+     > PASS [github.com] Serial:12345...
+
+  8. Ultra Silent (Exit code only):
+     cert-validate -cert leaf.pem -ultrasilent
+     (echo $?)
 ```
 
 ## Validating of sample certificate (from Go website)
