@@ -22,27 +22,29 @@ $ openssl verify -verbose -CAfile ./root.crt -untrusted ./some-issuing-ca.crt -u
 
 ## Usage
 ```shell
-Usage of ./x509-cert-validator:
+Usage of ./x509-cert-validator5:
   -aia
         Enable automatic AIA fetching
   -at string
         Optional: Validate at RFC3339 time
   -cert string
-        Path to Certificate PEM, HTTP URL (download), or HTTPS URL (live probe)
+        Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.
   -createCAbundle string
         Optional: Path to create/export the discovered CA bundle
   -crl
-        Enable CRL revocation checking
+        Enable certificate revocation checking (CRL)
   -dns string
         Optional: Verify specific DNS name
   -includeRoot
         Include Root CA in the generated bundle
   -root string
-        Path to Root CA PEM (optional; uses System Roots if empty)
+        Path to Root CA PEM/DER (optional; uses System Roots if empty)
   -showGraph
         Display ASCII graph of the verified chain
   -silent
         Output only pass/fail status and cert ID
+  -sni string
+        Optional: Override TLS SNI for live HTTPS probes (https://...)
   -type string
         Validation type: server, client, or any (default "any")
   -ultrasilent

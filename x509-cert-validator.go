@@ -2,6 +2,10 @@ package main
 
 import (
         "bytes"
+        "crypto/dsa"
+        "crypto/ecdsa"
+        "crypto/ed25519"
+        "crypto/rsa"
         "crypto/sha256"
         "crypto/tls"
         "crypto/x509"
@@ -26,11 +30,21 @@ const (
         LevelUltraSilent = 2
 )
 
+// Size limits
+const (
+        MaxAIADownloadBytes   int64 = 512 * 1024 // 512KB
+        MaxCRLDownloadBytes   int64 = 80 * 1024 * 1024 // 80MB, yes - it happens in the Net
+        MaxLocalFileBytes     int64 = 1 * 1024 * 1024 // 1MB
+        MaxRemoteCertFileSize int64 = 512 * 1024 // 512KB
+)
+
 var (
         verbosity          int
-        targetLeaf         *x509.Certificate
-        rootSourceLabel    string
-        hasUnsupportedAlgo bool
+        targetLeaf         *x509.Certificate // Global reference for error reporting
+        rootSourceLabel    string            // Tracks where the Root Trust came from (System vs File)
+        hasUnsupportedAlgo bool              // Flag to track if we found GOST/unknown algos or unsupported curves
+        hasInsecureAlgo    bool              // Flag to track if Go rejected verification due to insecure algorithm policy (e.g., SHA1)
+        sniOverride        string            // Optional SNI override for live HTTPS probes
 )
 
 func main() {
@@ -73,11 +87,12 @@ func main() {
         }
 
         // --- CLI Arguments ---
-        certPath := flag.String("cert", "", "Path to Certificate PEM, HTTP URL (download), or HTTPS URL (live probe)")
-        rootPath := flag.String("root", "", "Path to Root CA PEM (optional; uses System Roots if empty)")
+        certPath := flag.String("cert", "", "Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.")
+        rootPath := flag.String("root", "", "Path to Root CA PEM/DER (optional; uses System Roots if empty)")
         dnsName := flag.String("dns", "", "Optional: Verify specific DNS name")
+        sni := flag.String("sni", "", "Optional: Override TLS SNI for live HTTPS probes (https://...)")
         atTime := flag.String("at", "", "Optional: Validate at RFC3339 time")
-        enableCRL := flag.Bool("crl", false, "Enable certificate revocation checking")
+        enableCRL := flag.Bool("crl", false, "Enable certificate revocation checking (CRL)")
         enableAIA := flag.Bool("aia", false, "Enable automatic AIA fetching")
         createBundlePath := flag.String("createCAbundle", "", "Optional: Path to create/export the discovered CA bundle")
         includeRoot := flag.Bool("includeRoot", false, "Include Root CA in the generated bundle")
@@ -102,6 +117,21 @@ func main() {
                         flag.Usage()
                 }
                 os.Exit(1)
+        }
+
+        // Reject file:// explicitly (requested)
+        if strings.HasPrefix(strings.ToLower(strings.TrimSpace(*certPath)), "file://") {
+                exitErr(fmt.Errorf("unsupported -cert scheme: file:// is not accepted; provide a local path or http(s) URL"))
+        }
+        if strings.HasPrefix(strings.ToLower(strings.TrimSpace(*rootPath)), "file://") {
+                exitErr(fmt.Errorf("unsupported -root scheme: file:// is not accepted; provide a local path"))
+        }
+
+        sniOverride = strings.TrimSpace(*sni)
+        if sniOverride != "" && strings.Contains(sniOverride, ":") {
+                if h, _, err := net.SplitHostPort(sniOverride); err == nil {
+                        sniOverride = h
+                }
         }
 
         logNormal("Runtime: %s\n", runtime.Version())
@@ -133,11 +163,9 @@ func main() {
         // --- 3. Load Roots (File or System) ---
         var roots *x509.CertPool
         var rootCerts []*x509.Certificate
-        // We use a pool list to check signatures later
-        var poolList []*x509.Certificate
-		
+        var poolList []*x509.Certificate // For signature-based parent checks (AIA stop condition)
+
         if *rootPath != "" {
-			// User provided explicit roots
                 rootSourceLabel = "Explicit User File"
                 logNormal("--- Loading Roots (File) ---\n")
                 roots = x509.NewCertPool()
@@ -151,7 +179,6 @@ func main() {
                         poolList = append(poolList, cert)
                 }
         } else {
-				// User defaulted to system roots
                 rootSourceLabel = "System Trust Store"
                 logNormal("--- Loading Roots (System) ---\n")
                 var err error
@@ -172,6 +199,9 @@ func main() {
         if len(flag.Args()) > 0 {
                 logNormal("\n--- Loading Intermediates (CLI) ---\n")
                 for _, path := range flag.Args() {
+                        if strings.HasPrefix(strings.ToLower(strings.TrimSpace(path)), "file://") {
+                                exitErr(fmt.Errorf("unsupported intermediate scheme: file:// is not accepted (%s)", path))
+                        }
                         for _, cert := range loadAll(path) {
                                 printShortID("Inter", cert)
                                 if !cert.IsCA {
@@ -187,9 +217,9 @@ func main() {
         // --- 5. Load Target Cert (File, HTTP, or HTTPS) ---
         targetCerts := loadAll(*certPath)
         leaf := targetCerts[0]
-        targetLeaf = leaf // Set global context for error reporting
+        targetLeaf = leaf
 
-		// If using HTTPS probe, we might get the full chain from the server.
+        // If using HTTPS probe, we might get the full chain from the server.
         if len(targetCerts) > 1 {
                 logNormal("\nℹ️  Target URL returned %d certificates. Treating [1..n] as intermediates.\n", len(targetCerts))
                 for i := 1; i < len(targetCerts); i++ {
@@ -211,14 +241,25 @@ func main() {
                 chainDepth := 0
                 maxDepth := 10
 
+                // Extra loop-guard: stop if we see same cert again (cycle / self AIA / weird CA)
+                seen := make(map[string]bool)
+
                 for chainDepth < maxDepth {
+                        curFP := sha256.Sum256(currentCert.Raw)
+                        curKey := hex.EncodeToString(curFP[:])
+                        if seen[curKey] {
+                                logNormal("⚠️  WARNING: AIA loop detected (already visited %s). Stopping fetch.\n", cnOrDN(currentCert))
+                                break
+                        }
+                        seen[curKey] = true
+
                         // Signature-based Check. Do we already have a valid issuer?
                         if findParentInList(currentCert, poolList) {
                                 logNormal("ℹ️  Valid parent found locally. Stopping fetch.\n")
                                 break
                         }
 
-                        // Stronger Self-Signed Check
+                        // Self-signed root check
                         if isSelfSigned(currentCert) {
                                 logNormal("ℹ️  Reached Self-Signed Root. Stopping fetch.\n")
                                 break
@@ -229,16 +270,22 @@ func main() {
                                 break
                         }
 
-                        // DoS Protection in Fetch
                         parentCert, err := fetchAIA(currentCert)
                         if err != nil {
                                 logNormal("⚠️  AIA Fetch failed: %v\n", err)
                                 break
                         }
 
-                        // Re-check self-signed on fetched cert
+                        // Another loop guard: if AIA returns same cert we already saw, stop immediately
+                        parentFP := sha256.Sum256(parentCert.Raw)
+                        parentKey := hex.EncodeToString(parentFP[:])
+                        if seen[parentKey] {
+                                logNormal("⚠️  WARNING: AIA returned a previously seen certificate (%s). Stopping fetch.\n", cnOrDN(parentCert))
+                                break
+                        }
+
                         if isSelfSigned(parentCert) {
-                                logNormal("ℹ️  Fetched cert is Root CA (%s). Stopping fetch.\n", parentCert.Subject.CommonName)
+                                logNormal("ℹ️  Fetched cert is Root CA (%s, Key=%s). Stopping fetch.\n", parentCert.Subject.CommonName, certPublicKeySummary(parentCert))
                                 if *includeRoot && *createBundlePath != "" && *rootPath == "" {
                                         rootCerts = append(rootCerts, parentCert)
                                         logNormal("   (Added to export list as Root)\n")
@@ -249,10 +296,14 @@ func main() {
                         inters.AddCert(parentCert)
                         bundleCerts = append(bundleCerts, parentCert)
                         poolList = append(poolList, parentCert)
-                        logNormal("✅ Added fetched certificate: %s\n", parentCert.Subject)
+                        logNormal("✅ Added fetched certificate: %s (Key=%s)\n", parentCert.Subject, certPublicKeySummary(parentCert))
 
                         currentCert = parentCert
                         chainDepth++
+                }
+
+                if chainDepth >= maxDepth {
+                        logNormal("⚠️  WARNING: AIA fetch stopped after max depth (%d).\n", maxDepth)
                 }
         }
 
@@ -267,7 +318,6 @@ func main() {
                                 logNormal("❌ Failed to create bundle file: %v\n", err)
                         } else {
                                 count := 0
-                                // Deduplication Map
                                 seen := make(map[string]bool)
 
                                 writeCert := func(c *x509.Certificate) {
@@ -297,11 +347,17 @@ func main() {
                 }
         }
 
+        // Behavior: if -sni is set and -dns is empty, use SNI as DNS verification target.
+        effectiveDNS := strings.TrimSpace(*dnsName)
+        if effectiveDNS == "" && sniOverride != "" {
+                effectiveDNS = sniOverride
+        }
+
         // --- 8. Verify Chain ---
         opts := x509.VerifyOptions{
                 Roots:         roots,
                 Intermediates: inters,
-                DNSName:       *dnsName,
+                DNSName:       effectiveDNS,
                 CurrentTime:   currentTime,
                 KeyUsages:     keyUsages,
         }
@@ -321,9 +377,35 @@ func main() {
                 } else {
                         for depth, cert := range chain {
                                 prefix := strings.Repeat("  ", depth)
-                                logNormal("%s[%d] Subject: %s\n", prefix, depth, cert.Subject)
+
+                                subCN := cert.Subject.CommonName
+                                if subCN == "" {
+                                        subCN = "No-CN"
+                                }
+                                issCN := cert.Issuer.CommonName
+                                if issCN == "" {
+                                        issCN = "No-CN"
+                                }
+
+                                self := ""
+                                if isSelfSigned(cert) {
+                                        self = " (self-signed)"
+                                }
+
                                 sum := sha256.Sum256(cert.Raw)
-                                logNormal("%s    Fingerprint: %x\n", prefix, sum[:8])
+                                logNormal("%s[%d] Subject: %s%s\n", prefix, depth, subCN, self)
+                                logNormal("%s    Issuer:  %s\n", prefix, issCN)
+                                logNormal("%s    FP(sha256): %x\n", prefix, sum[:8])
+                                logNormal("%s    PubKey: %s\n", prefix, certPublicKeySummary(cert))
+                                logNormal("%s    SigAlg: %s\n", prefix, cert.SignatureAlgorithm)
+
+                                // If issuer is in-chain, show issuer key type/length used to verify this cert's signature.
+                                if depth+1 < len(chain) {
+                                        issuer := chain[depth+1]
+                                        logNormal("%s    SignedByKey: %s\n", prefix, certPublicKeySummary(issuer))
+                                } else if isSelfSigned(cert) {
+                                        logNormal("%s    SignedByKey: %s\n", prefix, certPublicKeySummary(cert))
+                                }
                         }
                 }
         }
@@ -342,11 +424,77 @@ func main() {
 
 // --- Helpers ---
 
+func cnOrDN(c *x509.Certificate) string {
+        if c == nil {
+                return "UNKNOWN"
+        }
+        if c.Subject.CommonName != "" {
+                return c.Subject.CommonName
+        }
+        return c.Subject.String()
+}
+
+func flagUnsupportedIfNeeded(cert *x509.Certificate) {
+        if cert == nil {
+                return
+        }
+        if cert.SignatureAlgorithm == x509.UnknownSignatureAlgorithm ||
+                cert.PublicKeyAlgorithm == x509.UnknownPublicKeyAlgorithm {
+                hasUnsupportedAlgo = true
+        }
+}
+
+func looksLikeUnsupportedAlgoErr(err error) bool {
+        if err == nil {
+                return false
+        }
+        s := err.Error()
+        return strings.Contains(s, "algorithm unimplemented") ||
+                strings.Contains(s, "unknown public key algorithm") ||
+                strings.Contains(s, "unknown signature algorithm") ||
+                strings.Contains(s, "unsupported elliptic curve") ||
+                strings.Contains(s, "unsupported algorithm")
+}
+
+func looksLikeInsecureAlgoErr(err error) bool {
+        if err == nil {
+                return false
+        }
+        // Go returns errors like:
+        //   x509: cannot verify signature: insecure algorithm SHA1-RSA
+        // or wraps it with:
+        //   ... possibly because of "... insecure algorithm ..."
+        return strings.Contains(err.Error(), "insecure algorithm")
+}
+
+func parseRevocationListFromData(data []byte) (*x509.RevocationList, error) {
+        // Try PEM first (may contain multiple blocks)
+        rest := data
+        for {
+                block, r := pem.Decode(rest)
+                if block == nil {
+                        break
+                }
+                rest = r
+                if strings.Contains(block.Type, "CRL") {
+                        return x509.ParseRevocationList(block.Bytes)
+                }
+        }
+        // Fallback: assume DER
+        return x509.ParseRevocationList(data)
+}
+
 func findParentInList(child *x509.Certificate, pool []*x509.Certificate) bool {
         for _, parent := range pool {
-                // Optimization: Check Subject/Issuer match first
+                // Fast path: DER-equal issuer/subject
                 if bytes.Equal(child.RawIssuer, parent.RawSubject) {
-                        // Strong Check: Verify Signature
+                        if child.CheckSignatureFrom(parent) == nil {
+                                return true
+                        }
+                        continue
+                }
+                // Fallback for rare DER encoding differences
+                if child.Issuer.String() == parent.Subject.String() {
                         if child.CheckSignatureFrom(parent) == nil {
                                 return true
                         }
@@ -356,16 +504,42 @@ func findParentInList(child *x509.Certificate, pool []*x509.Certificate) bool {
 }
 
 func isSelfSigned(cert *x509.Certificate) bool {
-        if !bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+        if cert.CheckSignatureFrom(cert) != nil {
                 return false
         }
-        return cert.CheckSignatureFrom(cert) == nil
+        // Fast path
+        if bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+                return true
+        }
+        // Fallback for rare DER encoding differences
+        return cert.Issuer.String() == cert.Subject.String()
 }
 
 func handleVerifyError(err error, certPath, rootPath, usage string) {
+        if looksLikeUnsupportedAlgoErr(err) {
+                hasUnsupportedAlgo = true
+        }
+        if looksLikeInsecureAlgoErr(err) {
+                hasInsecureAlgo = true
+        }
+
         if hasUnsupportedAlgo {
-                logNormal("\n⚠️  CRITICAL HINT: This certificate uses an algorithm unsupported by Go (e.g., GOST).\n")
+                logNormal("\n⚠️  CRITICAL HINT: Go rejected this chain because it contains an unsupported algorithm/curve (e.g., GOST or unsupported EC curve).\n")
                 logNormal("   Please try verifying with OpenSSL directly:\n")
+                logNormal("   $ openssl x509 -in %s -noout -text\n", certPath)
+                if rootPath != "" {
+                        logNormal("   $ openssl verify -CAfile %s %s\n\n", rootPath, certPath)
+                } else {
+                        logNormal("   $ openssl verify %s\n\n", certPath)
+                }
+        } else if hasInsecureAlgo {
+                // This is NOT “unsupported”; it's “policy refusal” (e.g., SHA1).
+                logNormal("\n⚠️  CRITICAL HINT: Go refused to verify due to an insecure signature algorithm policy (e.g., SHA1/MD5).\n")
+                if targetLeaf != nil {
+                        logNormal("   Leaf Signature Algorithm: %s\n", targetLeaf.SignatureAlgorithm)
+                        logNormal("   Leaf Public Key: %s\n", certPublicKeySummary(targetLeaf))
+                }
+                logNormal("   Verify with OpenSSL to confirm the chain, then re-issue with a modern hash (SHA-256+):\n")
                 logNormal("   $ openssl x509 -in %s -noout -text\n", certPath)
                 if rootPath != "" {
                         logNormal("   $ openssl verify -CAfile %s %s\n\n", rootPath, certPath)
@@ -374,26 +548,36 @@ func handleVerifyError(err error, certPath, rootPath, usage string) {
                 }
         } else if strings.Contains(err.Error(), "authority") {
                 logNormal("  (Tip: Ensure intermediates are provided or use -aia)\n")
-        } else if strings.Contains(err.Error(), "KeyUsage") {
+        } else if strings.Contains(err.Error(), "KeyUsage") || strings.Contains(err.Error(), "key usage") {
                 logNormal("  (Tip: Check if the certificate is valid for the requested type: %s)\n", usage)
+        } else if strings.Contains(err.Error(), "x509") && strings.Contains(err.Error(), "valid for") {
+                logNormal("  (Tip: Hostname mismatch; use -dns or -sni appropriately)\n")
         }
+
         exitErr(fmt.Errorf("VALIDATION FAILED: %v", err))
 }
 
 func highlightLeafIssues(cert *x509.Certificate) {
         logNormal("\n=== Heuristic Analysis ===\n")
+
+        // Always show key type/size here (requested).
+        logNormal("ℹ️  Leaf Public Key: %s\n", certPublicKeySummary(cert))
+        logNormal("ℹ️  Leaf Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+
         if cert.SignatureAlgorithm == x509.UnknownSignatureAlgorithm {
                 hasUnsupportedAlgo = true
-                logNormal("⚠️  WARNING: Signature Algorithm is UNKNOWN/UNSUPPORTED (Possible GOST).\n")
+                logNormal("⚠️  WARNING: Signature Algorithm is UNKNOWN/UNSUPPORTED (Possible GOST or unknown).\n")
         }
         if cert.PublicKeyAlgorithm == x509.UnknownPublicKeyAlgorithm {
                 hasUnsupportedAlgo = true
                 logNormal("⚠️  WARNING: Public Key Algorithm is UNKNOWN.\n")
         }
+
         switch cert.SignatureAlgorithm {
         case x509.MD5WithRSA, x509.SHA1WithRSA, x509.DSAWithSHA1, x509.ECDSAWithSHA1:
                 logNormal("⚠️  WARNING: Weak signature algorithm: %v\n", cert.SignatureAlgorithm)
         }
+
         if len(cert.DNSNames) == 0 && len(cert.IPAddresses) == 0 {
                 logNormal("⚠️  WARNING: Certificate has no SAN entries.\n")
         }
@@ -402,78 +586,148 @@ func highlightLeafIssues(cert *x509.Certificate) {
         }
 }
 
+type crlCacheEntry struct {
+        rl *x509.RevocationList
+}
+
+// CRL policy:
+// - PEM and DER supported.
+// - If multiple CDPs exist: at least one must respond with a VALID CRL.
+// - Missing ThisUpdate/NextUpdate => warning AND treated as invalid for -crl.
+// - If multiple VALID CRLs respond: if ANY indicates revoked => FAIL with clear message.
 func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
         client := &http.Client{Timeout: 5 * time.Second}
+
+        // Cache CRLs by URL (avoids repeated downloads across chains)
+        crlCache := make(map[string]crlCacheEntry)
+
+        // Dedupe per unique (child cert, parent cert) pair across all chain paths
+        checkedPair := make(map[string]bool)
 
         for _, chain := range chains {
                 for i := 0; i < len(chain)-1; i++ {
                         child := chain[i]
                         parent := chain[i+1]
 
-                        // FIX 5: Ensure Parent can Sign CRLs
+                        // Ensure Parent can Sign CRLs
                         if (parent.KeyUsage & x509.KeyUsageCRLSign) == 0 {
-                                logNormal("⚠️  WARNING: Issuer '%s' does not have CRLSign usage. Skipping CRL check for this level.\n", parent.Subject.CommonName)
+                                logNormal("⚠️  WARNING: Issuer '%s' does not have CRLSign usage. Skipping CRL check for this level.\n", cnOrDN(parent))
                                 continue
                         }
 
                         if len(child.CRLDistributionPoints) == 0 {
-                                logNormal("ℹ️  Skipping %s (No CDP defined)\n", child.Subject.CommonName)
+                                logNormal("ℹ️  Skipping %s (No CDP defined)\n", cnOrDN(child))
                                 continue
                         }
 
-                        success := false
+                        // Pair dedupe (prevents duplicate checks across multiple verified chain paths)
+                        childFP := sha256.Sum256(child.Raw)
+                        parentFP := sha256.Sum256(parent.Raw)
+                        pairKey := hex.EncodeToString(childFP[:8]) + ":" + hex.EncodeToString(parentFP[:8])
+
+                        if checkedPair[pairKey] {
+                                logNormal("ℹ️  Skipping CRL re-check (already checked) for '%s' issued by '%s'\n", cnOrDN(child), cnOrDN(parent))
+                                continue
+                        }
+                        checkedPair[pairKey] = true
+
+                        validCRLFound := false
                         var errMsgs []string
 
-                        for idx, url := range child.CRLDistributionPoints {
-                                if !strings.HasPrefix(url, "http") {
-                                        continue
-                                }
-                                logNormal("⬇️  Fetching CRL for '%s' [%d/%d]: %s\n", child.Subject.CommonName, idx+1, len(child.CRLDistributionPoints), url)
-
-                                resp, err := client.Get(url)
-                                if err != nil {
-                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", url, err))
+                        for idx, cdpURL := range child.CRLDistributionPoints {
+                                if !strings.HasPrefix(cdpURL, "http://") && !strings.HasPrefix(cdpURL, "https://") {
                                         continue
                                 }
 
-                                // Limit CRL size as well (e.g. 10MB to be safe for large CRLs)
-                                data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-                                resp.Body.Close()
-                                if err != nil {
-                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: read failed", url))
-                                        continue
+                                var crl *x509.RevocationList
+                                if cached, ok := crlCache[cdpURL]; ok && cached.rl != nil {
+                                        crl = cached.rl
+                                        logNormal("ℹ️  Using cached CRL for '%s' [%d/%d]: %s\n", cnOrDN(child), idx+1, len(child.CRLDistributionPoints), cdpURL)
+                                } else {
+                                        logNormal("⬇️  Fetching CRL for '%s' [%d/%d]: %s\n", cnOrDN(child), idx+1, len(child.CRLDistributionPoints), cdpURL)
+
+                                        resp, err := client.Get(cdpURL)
+                                        if err != nil {
+                                                errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", cdpURL, err))
+                                                continue
+                                        }
+
+                                        data, err := io.ReadAll(io.LimitReader(resp.Body, MaxCRLDownloadBytes))
+                                        resp.Body.Close()
+                                        if err != nil {
+                                                errMsgs = append(errMsgs, fmt.Sprintf("%s: read failed", cdpURL))
+                                                continue
+                                        }
+
+                                        if int64(len(data)) == MaxCRLDownloadBytes {
+                                                logNormal("⚠️  WARNING: CRL reached size limit (%d bytes). It may be truncated.\n", MaxCRLDownloadBytes)
+                                        }
+
+                                        if resp.StatusCode != 200 {
+                                                errMsgs = append(errMsgs, fmt.Sprintf("%s: HTTP %d", cdpURL, resp.StatusCode))
+                                                continue
+                                        }
+
+                                        parsed, err := parseRevocationListFromData(data)
+                                        if err != nil {
+                                                if looksLikeUnsupportedAlgoErr(err) {
+                                                        hasUnsupportedAlgo = true
+                                                }
+                                                if looksLikeInsecureAlgoErr(err) {
+                                                        hasInsecureAlgo = true
+                                                }
+                                                errMsgs = append(errMsgs, fmt.Sprintf("%s: parse failed", cdpURL))
+                                                continue
+                                        }
+                                        crl = parsed
+                                        crlCache[cdpURL] = crlCacheEntry{rl: parsed}
                                 }
 
-                                // FIX 4: Use ParseRevocationList (Modern)
-                                crl, err := x509.ParseRevocationList(data)
-                                if err != nil {
-                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: parse failed", url))
-                                        continue
-                                }
-
+                                // Signature must validate against issuer
                                 if err := crl.CheckSignatureFrom(parent); err != nil {
-                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: invalid signature", url))
+                                        if looksLikeUnsupportedAlgoErr(err) {
+                                                hasUnsupportedAlgo = true
+                                        }
+                                        if looksLikeInsecureAlgoErr(err) {
+                                                hasInsecureAlgo = true
+                                        }
+                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: invalid signature", cdpURL))
+                                        continue
+                                }
+
+                                // Log key type/length used for CRL signature verification (requested).
+                                logNormal("   ℹ️  CRL Signature Verified: SigAlg=%s SignedByKey=%s Issuer=%s\n",
+                                        crl.SignatureAlgorithm, certPublicKeySummary(parent), cnOrDN(parent))
+
+                                // Missing ThisUpdate/NextUpdate => warning + treat as invalid for -crl
+                                if crl.ThisUpdate.IsZero() || crl.NextUpdate.IsZero() {
+                                        logNormal("⚠️  WARNING: CRL from %s missing ThisUpdate/NextUpdate; treating as invalid for -crl.\n", cdpURL)
+                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: missing ThisUpdate/NextUpdate", cdpURL))
                                         continue
                                 }
 
                                 if now.Before(crl.ThisUpdate) || now.After(crl.NextUpdate) {
-                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: CRL expired or future", url))
+                                        errMsgs = append(errMsgs, fmt.Sprintf("%s: CRL expired or future", cdpURL))
                                         continue
                                 }
 
+                                // This is a valid responding CRL
+                                validCRLFound = true
+
+                                // If any responding CRL reports revoked => fail (clear statement)
                                 for _, revoked := range crl.RevokedCertificateEntries {
                                         if child.SerialNumber.Cmp(revoked.SerialNumber) == 0 {
-                                                return fmt.Errorf("certificate %s is REVOKED", child.Subject)
+                                                return fmt.Errorf("certificate '%s' (Serial=%s) is REVOKED according to CRL %s",
+                                                        cnOrDN(child), child.SerialNumber.String(), cdpURL)
                                         }
                                 }
 
-                                success = true
-                                logNormal("   ✅ Valid CRL found via %s\n", url)
-                                break
+                                logNormal("   ✅ Valid CRL checked via %s\n", cdpURL)
+                                // Do NOT break: another responding CDP might still report revoked.
                         }
 
-                        if !success {
-                                return fmt.Errorf("failed to check CRL for %s. Errors: %v", child.Subject.CommonName, errMsgs)
+                        if !validCRLFound {
+                                return fmt.Errorf("failed to check CRL for %s. Errors: %v", cnOrDN(child), errMsgs)
                         }
                 }
         }
@@ -484,27 +738,29 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
         client := &http.Client{Timeout: 5 * time.Second}
         var lastErr error
 
-        for i, url := range cert.IssuingCertificateURL {
-                if !strings.HasPrefix(url, "http") {
+        for i, u := range cert.IssuingCertificateURL {
+                if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
                         continue
                 }
-                logNormal("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), url)
+                logNormal("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
 
-                resp, err := client.Get(url)
+                resp, err := client.Get(u)
                 if err != nil {
                         logNormal("   ⚠️  Connection Failed: %v\n", err)
                         lastErr = err
                         continue
                 }
 
-                // FIX 3: DoS Protection on AIA
-                const AIAMaxSize = 5 * 1024 * 1024 // 5MB
-                data, err := io.ReadAll(io.LimitReader(resp.Body, AIAMaxSize))
+                data, err := io.ReadAll(io.LimitReader(resp.Body, MaxAIADownloadBytes))
                 resp.Body.Close()
                 if err != nil {
                         logNormal("   ⚠️  Read Failed: %v\n", err)
                         lastErr = err
                         continue
+                }
+
+                if int64(len(data)) == MaxAIADownloadBytes {
+                        logNormal("⚠️  WARNING: AIA response reached size limit (%d bytes). It may be truncated.\n", MaxAIADownloadBytes)
                 }
 
                 if resp.StatusCode != 200 {
@@ -515,6 +771,7 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 
                 fetchedCerts := parseCertsFromDataSafe(data)
                 if len(fetchedCerts) > 0 {
+                        flagUnsupportedIfNeeded(fetchedCerts[0])
                         return fetchedCerts[0], nil
                 }
                 logNormal("   ⚠️  Parse Failed\n")
@@ -522,8 +779,6 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
         }
         return nil, fmt.Errorf("all AIA URLs failed. Last error: %v", lastErr)
 }
-
-// ... (Rest of helpers: printCertDetails, etc. unchanged from previous working blocks)
 
 func logNormal(format string, args ...interface{}) {
         if verbosity == LevelNormal {
@@ -573,17 +828,24 @@ func exitSuccess() {
 }
 
 func printShortID(role string, cert *x509.Certificate) {
+        flagUnsupportedIfNeeded(cert)
         hash := sha256.Sum256(cert.Raw)
-        logNormal("[%s] %s... (CN=%s)\n", role, hex.EncodeToString(hash[:])[:8], cert.Subject.CommonName)
+        logNormal("[%s] %s... (CN=%s, Key=%s)\n", role, hex.EncodeToString(hash[:])[:8], cert.Subject.CommonName, certPublicKeySummary(cert))
 }
 
 func printCertDetails(label string, cert *x509.Certificate) {
+        flagUnsupportedIfNeeded(cert)
         logNormal("\n=== %s Certificate Details ===\n", label)
         logNormal("Subject:     %s\n", cert.Subject)
         logNormal("Issuer:      %s\n", cert.Issuer)
         logNormal("Fingerprint: %x\n", sha256.Sum256(cert.Raw))
         logNormal("Serial:      %s\n", cert.SerialNumber)
         logNormal("Validity:    %s to %s\n", cert.NotBefore, cert.NotAfter)
+
+        // Requested: key type + length, plus signature algorithm
+        logNormal("Public Key:  %s\n", certPublicKeySummary(cert))
+        logNormal("Sig Alg:     %s\n", cert.SignatureAlgorithm)
+
         if len(cert.DNSNames) > 0 {
                 logNormal("SAN (DNS):   %v\n", cert.DNSNames)
         }
@@ -596,10 +858,15 @@ func printCertDetails(label string, cert *x509.Certificate) {
 }
 
 func loadAll(input string) []*x509.Certificate {
-        if strings.HasPrefix(input, "https://") {
+        s := strings.ToLower(strings.TrimSpace(input))
+        if strings.HasPrefix(s, "file://") {
+                exitErr(fmt.Errorf("unsupported path scheme: file:// is not accepted (%s)", input))
+        }
+
+        if strings.HasPrefix(s, "https://") {
                 return fetchRemoteCert(input)
         }
-        if strings.HasPrefix(input, "http://") {
+        if strings.HasPrefix(s, "http://") {
                 return downloadCertFile(input)
         }
         return loadLocalFile(input)
@@ -615,16 +882,27 @@ func fetchRemoteCert(urlStr string) []*x509.Certificate {
                 host = net.JoinHostPort(host, "443")
         }
         logNormal("⬇️  Connecting to remote server: %s ...\n", host)
-        conn, err := tls.Dial("tcp", host, &tls.Config{InsecureSkipVerify: true})
+
+        cfg := &tls.Config{InsecureSkipVerify: true} // we validate ourselves via x509.Verify
+        if sniOverride != "" {
+                cfg.ServerName = sniOverride
+                logNormal("ℹ️  Using SNI override: %s\n", sniOverride)
+        }
+
+        conn, err := tls.Dial("tcp", host, cfg)
         if err != nil {
                 exitErr(fmt.Errorf("failed to connect to %s: %v", host, err))
         }
         defer conn.Close()
+
         state := conn.ConnectionState()
         if len(state.PeerCertificates) == 0 {
                 exitErr(fmt.Errorf("no certificates presented by %s", host))
         }
         logNormal("✅ Retrieved %d certificates from server.\n", len(state.PeerCertificates))
+        for _, c := range state.PeerCertificates {
+                flagUnsupportedIfNeeded(c)
+        }
         return state.PeerCertificates
 }
 
@@ -637,6 +915,7 @@ func downloadCertFile(urlStr string) []*x509.Certificate {
                 exitErr(fmt.Errorf("unsupported protocol scheme: %s", u.Scheme))
         }
         logNormal("⬇️  Downloading certificate file: %s ...\n", urlStr)
+
         client := &http.Client{
                 Timeout: 10 * time.Second,
                 CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -646,6 +925,7 @@ func downloadCertFile(urlStr string) []*x509.Certificate {
                         return nil
                 },
         }
+
         req, err := http.NewRequest("GET", urlStr, nil)
         if err != nil {
                 exitErr(fmt.Errorf("request creation failed: %v", err))
@@ -661,21 +941,29 @@ func downloadCertFile(urlStr string) []*x509.Certificate {
                 exitErr(fmt.Errorf("download failed with status: %d", resp.StatusCode))
         }
 
-        const MaxSize = 0.5 * 1024 * 1024 // 0.5 MB
-        data, err := io.ReadAll(io.LimitReader(resp.Body, MaxSize))
+        data, err := io.ReadAll(io.LimitReader(resp.Body, MaxRemoteCertFileSize))
         if err != nil {
                 exitErr(fmt.Errorf("read failed: %v", err))
         }
-        if int64(len(data)) == MaxSize {
-                logNormal("⚠️  WARNING: File reached size limit (%d bytes). It may be truncated.\n", MaxSize)
+        if int64(len(data)) == MaxRemoteCertFileSize {
+                logNormal("⚠️  WARNING: File reached size limit (%d bytes). It may be truncated.\n", MaxRemoteCertFileSize)
         }
         return parseCertsFromData(data, urlStr)
 }
 
 func loadLocalFile(path string) []*x509.Certificate {
-        data, err := os.ReadFile(path)
+        f, err := os.Open(path)
         if err != nil {
                 exitErr(fmt.Errorf("read error (%s): %v", path, err))
+        }
+        defer f.Close()
+
+        data, err := io.ReadAll(io.LimitReader(f, MaxLocalFileBytes))
+        if err != nil {
+                exitErr(fmt.Errorf("read error (%s): %v", path, err))
+        }
+        if int64(len(data)) == MaxLocalFileBytes {
+                logNormal("⚠️  WARNING: Local file reached size limit (%d bytes). It may be truncated.\n", MaxLocalFileBytes)
         }
         return parseCertsFromData(data, path)
 }
@@ -692,8 +980,15 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
                 if block.Type == "CERTIFICATE" {
                         c, err := x509.ParseCertificate(block.Bytes)
                         if err != nil {
+                                if looksLikeUnsupportedAlgoErr(err) {
+                                        hasUnsupportedAlgo = true
+                                }
+                                if looksLikeInsecureAlgoErr(err) {
+                                        hasInsecureAlgo = true
+                                }
                                 logNormal("Skipping unparsable block in %s: %v\n", source, err)
                         } else {
+                                flagUnsupportedIfNeeded(c)
                                 certs = append(certs, c)
                         }
                 }
@@ -701,7 +996,14 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
         if len(certs) == 0 {
                 c, err := x509.ParseCertificate(data)
                 if err == nil {
+                        flagUnsupportedIfNeeded(c)
                         return []*x509.Certificate{c}
+                }
+                if looksLikeUnsupportedAlgoErr(err) {
+                        hasUnsupportedAlgo = true
+                }
+                if looksLikeInsecureAlgoErr(err) {
+                        hasInsecureAlgo = true
                 }
                 exitErr(fmt.Errorf("no certificates found in %s", source))
         }
@@ -720,14 +1022,30 @@ func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
                 if block.Type == "CERTIFICATE" {
                         c, err := x509.ParseCertificate(block.Bytes)
                         if err == nil {
+                                flagUnsupportedIfNeeded(c)
                                 certs = append(certs, c)
+                        } else {
+                                if looksLikeUnsupportedAlgoErr(err) {
+                                        hasUnsupportedAlgo = true
+                                }
+                                if looksLikeInsecureAlgoErr(err) {
+                                        hasInsecureAlgo = true
+                                }
                         }
                 }
         }
         if len(certs) == 0 {
                 c, err := x509.ParseCertificate(data)
                 if err == nil {
+                        flagUnsupportedIfNeeded(c)
                         certs = append(certs, c)
+                } else {
+                        if looksLikeUnsupportedAlgoErr(err) {
+                                hasUnsupportedAlgo = true
+                        }
+                        if looksLikeInsecureAlgoErr(err) {
+                                hasInsecureAlgo = true
+                        }
                 }
         }
         return certs
@@ -747,9 +1065,22 @@ func printChainGraph(chain []*x509.Certificate) {
                 if i == 0 {
                         role = "TARGET LEAF"
                 }
+
+                subCN := cert.Subject.CommonName
+                if subCN == "" {
+                        subCN = "No-CN"
+                }
+                issCN := cert.Issuer.CommonName
+                if issCN == "" {
+                        issCN = "No-CN"
+                }
+
                 fmt.Printf("+--------------------------------------------------+\n")
                 fmt.Printf("| %-48s |\n", role)
-                fmt.Printf("| CN: %-44s |\n", truncate(cert.Subject.CommonName, 44))
+                fmt.Printf("| CN: %-44s |\n", truncate(subCN, 44))
+                fmt.Printf("| Issuer: %-40s |\n", truncate(issCN, 40))
+                fmt.Printf("| Key: %-43s |\n", truncate(certPublicKeySummary(cert), 43))
+                fmt.Printf("| Sig: %-43s |\n", truncate(cert.SignatureAlgorithm.String(), 43))
                 fmt.Printf("| SN: %-44s |\n", truncate(cert.SerialNumber.String(), 44))
                 fmt.Printf("+--------------------------------------------------+\n")
                 if i > 0 {
@@ -765,4 +1096,50 @@ func truncate(s string, length int) string {
                 return s[:length-3] + "..."
         }
         return s
+}
+
+// --- Key/size helpers (requested output) ---
+
+func certPublicKeySummary(cert *x509.Certificate) string {
+        if cert == nil {
+                return "UNKNOWN"
+        }
+        return publicKeySummary(cert.PublicKey)
+}
+
+func publicKeySummary(pub any) string {
+        switch k := pub.(type) {
+        case *rsa.PublicKey:
+                if k == nil || k.N == nil {
+                        return "RSA-?"
+                }
+                return fmt.Sprintf("RSA-%d", k.N.BitLen())
+        case *ecdsa.PublicKey:
+                if k == nil || k.Curve == nil || k.Curve.Params() == nil {
+                        return "ECDSA-?"
+                }
+                name := k.Curve.Params().Name
+                bits := k.Curve.Params().BitSize
+                if name == "" && bits > 0 {
+                        return fmt.Sprintf("ECDSA-%d", bits)
+                }
+                if name != "" && bits > 0 {
+                        return fmt.Sprintf("ECDSA-%s(%d)", name, bits)
+                }
+                if name != "" {
+                        return fmt.Sprintf("ECDSA-%s", name)
+                }
+                return "ECDSA-?"
+        case ed25519.PublicKey:
+                // ed25519.PublicKey is []byte (32 bytes).
+                return "Ed25519-256"
+        case *dsa.PublicKey:
+                if k == nil || k.P == nil {
+                        return "DSA-?"
+                }
+                return fmt.Sprintf("DSA-%d", k.P.BitLen())
+        default:
+                // Keep it explicit rather than guessing.
+                return fmt.Sprintf("Unknown(%T)", pub)
+        }
 }
