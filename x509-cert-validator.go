@@ -54,35 +54,35 @@ func main() {
                 flag.PrintDefaults()
                 fmt.Fprintln(os.Stderr, "\nEXAMPLES:")
                 fmt.Fprintln(os.Stderr, "  1. Live HTTPS Probe (Check server's current chain):")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert https://github.com")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert https://github.com")
 
                 fmt.Fprintln(os.Stderr, "\n  2. Validate a Remote Certificate File (e.g., from an AIA URL):")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert http://cacerts.digicert.com/DigiCertGlobalG2TLSRSASHA2562020CA1-1.crt")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert http://cacerts.digicert.com/DigiCertGlobalG2TLSRSASHA2562020CA1-1.crt")
 
                 fmt.Fprintln(os.Stderr, "\n  3. Validation with Specific Constraints (-dns, -at, -type, -crl):")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -dns example.com -at \"2025-12-25T12:00:00Z\"")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert client-cert.pem -type client")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -crl")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -dns example.com -at \"2025-12-25T12:00:00Z\"")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert client-cert.pem -type client")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -crl")
 
                 fmt.Fprintln(os.Stderr, "\n  4. Fix Local Chain & Export Bundle:")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -aia -createCAbundle full-chain.crt")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle full-chain.crt")
 
                 fmt.Fprintln(os.Stderr, "\n  5. Exporting Root CA (-includeRoot):")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot")
                 fmt.Fprintln(os.Stderr, "     (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)")
                 fmt.Fprintln(os.Stderr, "     (    Never install an unknown Root CA unless you know what you are doing)")
                 fmt.Fprintln(os.Stderr, "     (    and have verified its fingerprint manually.)")
                 fmt.Fprintln(os.Stderr, "     (    Trusting a malicious Root might lead to interception of your private data.)")
 
                 fmt.Fprintln(os.Stderr, "\n  6. Visualization:")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -showGraph")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -showGraph")
 
                 fmt.Fprintln(os.Stderr, "\n  7. Silent Mode (Short status line only):")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -silent")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -silent")
                 fmt.Fprintln(os.Stderr, "     > PASS [github.com] Serial:12345...")
 
                 fmt.Fprintln(os.Stderr, "\n  8. Ultra Silent (Exit code only):")
-                fmt.Fprintln(os.Stderr, "     cert-validate -cert leaf.pem -ultrasilent")
+                fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -ultrasilent")
                 fmt.Fprintln(os.Stderr, "     (echo $?)")
         }
 
