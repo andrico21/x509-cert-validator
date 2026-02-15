@@ -84,7 +84,7 @@ EXAMPLES:
      (echo $?)
 ```
 
-## Validating of sample certificate (from Go website)
+## Validating of sample certificate (from Go website) - from file
 ```shell
 ./x509-cert-validator -cert test.crt -aia -crl
 Runtime: go1.26.0
@@ -126,6 +126,172 @@ CRL DPs:     [http://c.pki.goog/wr3/PBTgX3IAo5A.crl]
    ✅ Valid CRL found via http://c.pki.goog/wr3/PBTgX3IAo5A.crl
 ⬇️  Fetching CRL for 'WR3' [1/1]: http://c.pki.goog/r/r1.crl
    ✅ Valid CRL found via http://c.pki.goog/r/r1.crl
+✅ CRL CHECK PASSED
+```
+
+## Full certificate check - including incorrect DNS name
+
+```shell
+./x509-cert-validator5 -cert https://google.com -dns google.ru -aia -crl -showGraph
+Runtime: go1.26.0
+Validation Time: 2026-02-15T20:46:39+04:00
+--- Loading Roots (System) ---
+ℹ️  Loaded System Root Store.
+⬇️  Connecting to remote server: google.com:443 ...
+✅ Retrieved 3 certificates from server.
+
+ℹ️  Target URL returned 3 certificates. Treating [1..n] as intermediates.
+[Server-Sent] e6fe22bf... (CN=WR2, Key=RSA-2048)
+[Server-Sent] 3ee0278d... (CN=GTS Root R1, Key=RSA-4096)
+
+=== Target Certificate Certificate Details ===
+Subject:     CN=*.google.com
+Issuer:      CN=WR2,O=Google Trust Services,C=US
+Fingerprint: 977eca18f030b2d8f5c6f872e1cf30b5ceea5dcf26ac0bbbcf1723e233e05612
+Serial:      52229643006680258647429274309399474431
+Validity:    2026-01-26 08:39:20 +0000 UTC to 2026-04-20 08:39:19 +0000 UTC
+Public Key:  ECDSA-P-256(256)
+Sig Alg:     SHA256-RSA
+SAN (DNS):   [*.google.com *.appengine.google.com *.bdn.dev *.origin-test.bdn.dev *.cloud.google.com *.crowdsource.google.com *.datacompute.google.com *.google.ca *.google.cl *.google.co.in *.google.co.jp *.google.co.uk *.google.com.ar *.google.com.au *.google.com.br *.google.com.co *.google.com.mx *.google.com.tr *.google.com.vn *.google.de *.google.es *.google.fr *.google.hu *.google.it *.google.nl *.google.pl *.google.pt *.googleapis.cn *.gstatic.cn *.gstatic-cn.com googlecnapps.cn *.googlecnapps.cn googleapps-cn.com *.googleapps-cn.com gkecnapps.cn *.gkecnapps.cn googledownloads.cn *.googledownloads.cn recaptcha.net.cn *.recaptcha.net.cn recaptcha-cn.net *.recaptcha-cn.net widevine.cn *.widevine.cn ampproject.org.cn *.ampproject.org.cn ampproject.net.cn *.ampproject.net.cn google-analytics-cn.com *.google-analytics-cn.com googleadservices-cn.com *.googleadservices-cn.com googlevads-cn.com *.googlevads-cn.com googleapis-cn.com *.googleapis-cn.com googleoptimize-cn.com *.googleoptimize-cn.com doubleclick-cn.net *.doubleclick-cn.net *.fls.doubleclick-cn.net *.g.doubleclick-cn.net doubleclick.cn *.doubleclick.cn *.fls.doubleclick.cn *.g.doubleclick.cn dartsearch-cn.net *.dartsearch-cn.net googletraveladservices-cn.com *.googletraveladservices-cn.com googletagservices-cn.com *.googletagservices-cn.com googletagmanager-cn.com *.googletagmanager-cn.com googlesyndication-cn.com *.googlesyndication-cn.com *.safeframe.googlesyndication-cn.com app-measurement-cn.com *.app-measurement-cn.com gvt1-cn.com *.gvt1-cn.com gvt2-cn.com *.gvt2-cn.com 2mdn-cn.net *.2mdn-cn.net googleflights-cn.net *.googleflights-cn.net admob-cn.com *.admob-cn.com *.gemini.cloud.google.com googlesandbox-cn.com *.googlesandbox-cn.com *.safenup.googlesandbox-cn.com *.gstatic.com *.metric.gstatic.com *.gvt1.com *.gcpcdn.gvt1.com *.gvt2.com *.gcp.gvt2.com *.url.google.com *.youtube-nocookie.com *.ytimg.com ai.android android.com *.android.com *.flash.android.com g.cn *.g.cn g.co *.g.co goo.gl www.goo.gl google-analytics.com *.google-analytics.com google.com googlecommerce.com *.googlecommerce.com ggpht.cn *.ggpht.cn urchin.com *.urchin.com youtu.be youtube.com *.youtube.com music.youtube.com *.music.youtube.com youtubeeducation.com *.youtubeeducation.com youtubekids.com *.youtubekids.com yt.be *.yt.be android.clients.google.com *.android.google.cn *.chrome.google.cn *.developers.google.cn *.aistudio.google.com]
+AIA (Issuer): [http://i.pki.goog/wr2.crt]
+CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
+
+=== Heuristic Analysis ===
+ℹ️  Leaf Public Key: ECDSA-P-256(256)
+ℹ️  Leaf Signature Algorithm: SHA256-RSA
+
+=== Automatic AIA Fetching ===
+ℹ️  Valid parent found locally. Stopping fetch.
+
+=== Verifying Chain ===
+  (Tip: Hostname mismatch; use -dns or -sni appropriately)
+❌ ERROR: VALIDATION FAILED: x509: certificate is valid for 137 names, but none matched google.ru
+```
+
+## Full certificate check - including correct DNS name
+```shell
+/x509-cert-validator5 -cert https://google.com -dns google.com -aia -crl -showGraph
+Runtime: go1.26.0
+Validation Time: 2026-02-15T20:48:04+04:00
+--- Loading Roots (System) ---
+ℹ️  Loaded System Root Store.
+⬇️  Connecting to remote server: google.com:443 ...
+✅ Retrieved 3 certificates from server.
+
+ℹ️  Target URL returned 3 certificates. Treating [1..n] as intermediates.
+[Server-Sent] e6fe22bf... (CN=WR2, Key=RSA-2048)
+[Server-Sent] 3ee0278d... (CN=GTS Root R1, Key=RSA-4096)
+
+=== Target Certificate Certificate Details ===
+Subject:     CN=*.google.com
+Issuer:      CN=WR2,O=Google Trust Services,C=US
+Fingerprint: 977eca18f030b2d8f5c6f872e1cf30b5ceea5dcf26ac0bbbcf1723e233e05612
+Serial:      52229643006680258647429274309399474431
+Validity:    2026-01-26 08:39:20 +0000 UTC to 2026-04-20 08:39:19 +0000 UTC
+Public Key:  ECDSA-P-256(256)
+Sig Alg:     SHA256-RSA
+SAN (DNS):   [*.google.com *.appengine.google.com *.bdn.dev *.origin-test.bdn.dev *.cloud.google.com *.crowdsource.google.com *.datacompute.google.com *.google.ca *.google.cl *.google.co.in *.google.co.jp *.google.co.uk *.google.com.ar *.google.com.au *.google.com.br *.google.com.co *.google.com.mx *.google.com.tr *.google.com.vn *.google.de *.google.es *.google.fr *.google.hu *.google.it *.google.nl *.google.pl *.google.pt *.googleapis.cn *.gstatic.cn *.gstatic-cn.com googlecnapps.cn *.googlecnapps.cn googleapps-cn.com *.googleapps-cn.com gkecnapps.cn *.gkecnapps.cn googledownloads.cn *.googledownloads.cn recaptcha.net.cn *.recaptcha.net.cn recaptcha-cn.net *.recaptcha-cn.net widevine.cn *.widevine.cn ampproject.org.cn *.ampproject.org.cn ampproject.net.cn *.ampproject.net.cn google-analytics-cn.com *.google-analytics-cn.com googleadservices-cn.com *.googleadservices-cn.com googlevads-cn.com *.googlevads-cn.com googleapis-cn.com *.googleapis-cn.com googleoptimize-cn.com *.googleoptimize-cn.com doubleclick-cn.net *.doubleclick-cn.net *.fls.doubleclick-cn.net *.g.doubleclick-cn.net doubleclick.cn *.doubleclick.cn *.fls.doubleclick.cn *.g.doubleclick.cn dartsearch-cn.net *.dartsearch-cn.net googletraveladservices-cn.com *.googletraveladservices-cn.com googletagservices-cn.com *.googletagservices-cn.com googletagmanager-cn.com *.googletagmanager-cn.com googlesyndication-cn.com *.googlesyndication-cn.com *.safeframe.googlesyndication-cn.com app-measurement-cn.com *.app-measurement-cn.com gvt1-cn.com *.gvt1-cn.com gvt2-cn.com *.gvt2-cn.com 2mdn-cn.net *.2mdn-cn.net googleflights-cn.net *.googleflights-cn.net admob-cn.com *.admob-cn.com *.gemini.cloud.google.com googlesandbox-cn.com *.googlesandbox-cn.com *.safenup.googlesandbox-cn.com *.gstatic.com *.metric.gstatic.com *.gvt1.com *.gcpcdn.gvt1.com *.gvt2.com *.gcp.gvt2.com *.url.google.com *.youtube-nocookie.com *.ytimg.com ai.android android.com *.android.com *.flash.android.com g.cn *.g.cn g.co *.g.co goo.gl www.goo.gl google-analytics.com *.google-analytics.com google.com googlecommerce.com *.googlecommerce.com ggpht.cn *.ggpht.cn urchin.com *.urchin.com youtu.be youtube.com *.youtube.com music.youtube.com *.music.youtube.com youtubeeducation.com *.youtubeeducation.com youtubekids.com *.youtubekids.com yt.be *.yt.be android.clients.google.com *.android.google.cn *.chrome.google.cn *.developers.google.cn *.aistudio.google.com]
+AIA (Issuer): [http://i.pki.goog/wr2.crt]
+CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
+
+=== Heuristic Analysis ===
+ℹ️  Leaf Public Key: ECDSA-P-256(256)
+ℹ️  Leaf Signature Algorithm: SHA256-RSA
+
+=== Automatic AIA Fetching ===
+ℹ️  Valid parent found locally. Stopping fetch.
+
+=== Verifying Chain ===
+✅ VALIDATION SUCCEEDED
+
+--- Verified Chain Path 1 ---
+
++--------------------------------------------------+
+| ROOT ANCHOR                                      |
+| CN: GTS Root R1                                  |
+| Issuer: GTS Root R1                              |
+| Key: RSA-4096                                    |
+| Sig: SHA384-RSA                                  |
+| SN: 159662320309726417404178440727               |
++--------------------------------------------------+
+      |
+      V
++--------------------------------------------------+
+| INTERMEDIATE                                     |
+| CN: WR2                                          |
+| Issuer: GTS Root R1                              |
+| Key: RSA-2048                                    |
+| Sig: SHA256-RSA                                  |
+| SN: 170058220837755766831192027518741805976      |
++--------------------------------------------------+
+      |
+      V
++--------------------------------------------------+
+| TARGET LEAF                                      |
+| CN: *.google.com                                 |
+| Issuer: WR2                                      |
+| Key: ECDSA-P-256(256)                            |
+| Sig: SHA256-RSA                                  |
+| SN: 52229643006680258647429274309399474431       |
++--------------------------------------------------+
+
+
+--- Verified Chain Path 2 ---
+
++--------------------------------------------------+
+| ROOT ANCHOR                                      |
+| CN: GlobalSign Root CA                           |
+| Issuer: GlobalSign Root CA                       |
+| Key: RSA-2048                                    |
+| Sig: SHA1-RSA                                    |
+| SN: 4835703278459707669005204                    |
++--------------------------------------------------+
+      |
+      V
++--------------------------------------------------+
+| INTERMEDIATE                                     |
+| CN: GTS Root R1                                  |
+| Issuer: GlobalSign Root CA                       |
+| Key: RSA-4096                                    |
+| Sig: SHA256-RSA                                  |
+| SN: 159159747900478145820483398898491642637      |
++--------------------------------------------------+
+      |
+      V
++--------------------------------------------------+
+| INTERMEDIATE                                     |
+| CN: WR2                                          |
+| Issuer: GTS Root R1                              |
+| Key: RSA-2048                                    |
+| Sig: SHA256-RSA                                  |
+| SN: 170058220837755766831192027518741805976      |
++--------------------------------------------------+
+      |
+      V
++--------------------------------------------------+
+| TARGET LEAF                                      |
+| CN: *.google.com                                 |
+| Issuer: WR2                                      |
+| Key: ECDSA-P-256(256)                            |
+| Sig: SHA256-RSA                                  |
+| SN: 52229643006680258647429274309399474431       |
++--------------------------------------------------+
+
+
+=== Checking CRLs ===
+⬇️  Fetching CRL for '*.google.com' [1/1]: http://c.pki.goog/wr2/oBFYYahzgVI.crl
+   ℹ️  CRL Signature Verified: SigAlg=SHA256-RSA SignedByKey=RSA-2048 Issuer=WR2
+   ✅ Valid CRL checked via http://c.pki.goog/wr2/oBFYYahzgVI.crl
+⬇️  Fetching CRL for 'WR2' [1/1]: http://c.pki.goog/r/r1.crl
+   ℹ️  CRL Signature Verified: SigAlg=SHA256-RSA SignedByKey=RSA-4096 Issuer=GTS Root R1
+   ✅ Valid CRL checked via http://c.pki.goog/r/r1.crl
+ℹ️  Skipping CRL re-check (already checked) for '*.google.com' issued by 'WR2'
+ℹ️  Using cached CRL for 'WR2' [1/1]: http://c.pki.goog/r/r1.crl
+   ℹ️  CRL Signature Verified: SigAlg=SHA256-RSA SignedByKey=RSA-4096 Issuer=GTS Root R1
+   ✅ Valid CRL checked via http://c.pki.goog/r/r1.crl
+⬇️  Fetching CRL for 'GTS Root R1' [1/1]: http://crl.pki.goog/gsr1/gsr1.crl
+   ℹ️  CRL Signature Verified: SigAlg=SHA256-RSA SignedByKey=RSA-2048 Issuer=GlobalSign Root CA
+   ✅ Valid CRL checked via http://crl.pki.goog/gsr1/gsr1.crl
 ✅ CRL CHECK PASSED
 ```
 
