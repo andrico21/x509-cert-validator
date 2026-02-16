@@ -30,15 +30,23 @@ Usage of ./x509-cert-validator:
   -cert string
         Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.
   -createCAbundle string
-        Optional: Path to create/export the discovered CA bundle
+        Optional: Path to create/export CA bundle. On success, exports from verified chain(s).
   -crl
         Enable certificate revocation checking (CRL)
   -dns string
         Optional: Verify specific DNS name
   -includeRoot
-        Include Root CA in the generated bundle
+        Include Root/Trust-Anchor certificate(s) in the generated bundle
+  -maxaia int
+        Max bytes to download per AIA issuer fetch (default 524288)
+  -maxcert int
+        Max bytes to download for remote cert file (http/https) (default 524288)
+  -maxcrl int
+        Max bytes to download per CRL URL (default 20971520)
+  -maxlocal int
+        Max bytes to read from local cert file (default 1048576)
   -root string
-        Path to Root CA PEM/DER (optional; uses System Roots if empty)
+        Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).
   -showGraph
         Display ASCII graph of the verified chain
   -silent
@@ -64,22 +72,21 @@ EXAMPLES:
 
   4. Fix Local Chain & Export Bundle:
      x509-cert-validator -cert leaf.pem -aia -createCAbundle full-chain.crt
-
-  5. Exporting Root CA (-includeRoot):
-     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot
+     Exporting Root CA (-includeRoot) requires explicit specification of root CA's certificate file (-root <filename>).
+     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot -root custom-root-ca.crt
      (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)
      (    Never install an unknown Root CA unless you know what you are doing)
      (    and have verified its fingerprint manually.)
      (    Trusting a malicious Root might lead to interception of your private data.)
 
-  6. Visualization:
+  5. Visualization:
      x509-cert-validator -cert leaf.pem -showGraph
 
-  7. Silent Mode (Short status line only):
+  6. Silent Mode (Short status line only):
      x509-cert-validator -cert leaf.pem -silent
      > PASS [github.com] Serial:12345...
 
-  8. Ultra Silent (Exit code only):
+  7. Ultra Silent (Exit code only):
      x509-cert-validator -cert leaf.pem -ultrasilent
      (echo $?)
 ```
