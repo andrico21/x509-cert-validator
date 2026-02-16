@@ -75,9 +75,8 @@ func main() {
 
 		fmt.Fprintln(os.Stderr, "\n  4. Fix Local Chain & Export Bundle:")
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle full-chain.crt")
-
-		fmt.Fprintln(os.Stderr, "\n  5. Exporting Root CA (-includeRoot):")
-		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot")
+		fmt.Fprintln(os.Stderr, "     Exporting Root CA (-includeRoot) requires explicit specification of root CA's certificate file (-root <filename>).")
+		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot -root custom-root-ca.crt")
 		fmt.Fprintln(os.Stderr, "     (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)")
 		fmt.Fprintln(os.Stderr, "     (    Never install an unknown Root CA unless you know what you are doing)")
 		fmt.Fprintln(os.Stderr, "     (    and have verified its fingerprint manually.)")
@@ -746,6 +745,7 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 				}
 
 				logNormal("   ✅ Valid CRL checked via %s\n", cdpURL)
+				_ = idx
 				// Do NOT break: another responding CDP might still report revoked.
 			}
 
@@ -1084,10 +1084,19 @@ func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
 	return certs
 }
 
+// --- Graph view (updated: show full Name Constraints details when present) ---
+
 func printChainGraph(chain []*x509.Certificate) {
 	if verbosity == LevelUltraSilent {
 		return
 	}
+
+	const w = 48
+	border := "+--------------------------------------------------+"
+	boxLine := func(s string) {
+		fmt.Printf("| %-48s |\n", truncate(s, w))
+	}
+
 	fmt.Println()
 	for i := len(chain) - 1; i >= 0; i-- {
 		cert := chain[i]
@@ -1108,23 +1117,23 @@ func printChainGraph(chain []*x509.Certificate) {
 			issCN = "No-CN"
 		}
 
-		ncText := "no"
-		if hasAnyNameConstraints(cert) {
-			ncText = "yes"
-			if cert.PermittedDNSDomainsCritical {
-				ncText = "yes (critical)"
-			}
+		ncLines := buildNameConstraintLines(cert, w)
+
+		fmt.Println(border)
+		boxLine(role)
+		boxLine("CN: " + subCN)
+		boxLine("Issuer: " + issCN)
+		boxLine("Key: " + certPublicKeySummary(cert))
+		boxLine("Sig: " + cert.SignatureAlgorithm.String())
+
+		// Name constraints: summary + details (wrapped to box width)
+		for _, l := range ncLines {
+			boxLine(l)
 		}
 
-		fmt.Printf("+--------------------------------------------------+\n")
-		fmt.Printf("| %-48s |\n", role)
-		fmt.Printf("| CN: %-44s |\n", truncate(subCN, 44))
-		fmt.Printf("| Issuer: %-40s |\n", truncate(issCN, 40))
-		fmt.Printf("| Key: %-43s |\n", truncate(certPublicKeySummary(cert), 43))
-		fmt.Printf("| Sig: %-43s |\n", truncate(cert.SignatureAlgorithm.String(), 43))
-		fmt.Printf("| NC: %-44s |\n", truncate(ncText, 44))
-		fmt.Printf("| SN: %-44s |\n", truncate(cert.SerialNumber.String(), 44))
-		fmt.Printf("+--------------------------------------------------+\n")
+		boxLine("SN: " + cert.SerialNumber.String())
+		fmt.Println(border)
+
 		if i > 0 {
 			fmt.Println("      |")
 			fmt.Println("      V")
@@ -1168,6 +1177,83 @@ func ipNetListToStrings(nets []*net.IPNet) []string {
 		}
 		out = append(out, n.String())
 	}
+	return out
+}
+
+// Wraps a list into multiple lines within a fixed width.
+// First line starts with "Label: ", continuation lines align under it.
+func wrapList(label string, items []string, width int) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	prefix := label + ": "
+	contPrefix := strings.Repeat(" ", len(prefix))
+
+	var lines []string
+	cur := prefix
+
+	for _, it := range items {
+		if it == "" {
+			continue
+		}
+
+		sep := ""
+		if cur != prefix && cur != contPrefix {
+			sep = ", "
+		}
+
+		token := sep + it
+		if len(cur)+len(token) <= width {
+			cur += token
+			continue
+		}
+
+		// push current line
+		lines = append(lines, truncate(cur, width))
+
+		// start new line
+		cur = contPrefix + it
+		if len(cur) > width {
+			lines = append(lines, truncate(cur, width))
+			cur = contPrefix
+		}
+	}
+
+	// flush
+	if strings.TrimSpace(cur) != "" && cur != contPrefix {
+		lines = append(lines, truncate(cur, width))
+	}
+	return lines
+}
+
+func buildNameConstraintLines(cert *x509.Certificate, width int) []string {
+	if cert == nil {
+		return []string{"NC: unknown"}
+	}
+	if !hasAnyNameConstraints(cert) {
+		return []string{"NC: no"}
+	}
+
+	crit := ""
+	if cert.PermittedDNSDomainsCritical {
+		crit = " (critical)"
+	}
+
+	var out []string
+	out = append(out, "NC: yes"+crit)
+
+	out = append(out, wrapList("PermDNS", cert.PermittedDNSDomains, width)...)
+	out = append(out, wrapList("ExclDNS", cert.ExcludedDNSDomains, width)...)
+
+	out = append(out, wrapList("PermIP", ipNetListToStrings(cert.PermittedIPRanges), width)...)
+	out = append(out, wrapList("ExclIP", ipNetListToStrings(cert.ExcludedIPRanges), width)...)
+
+	out = append(out, wrapList("PermEmail", cert.PermittedEmailAddresses, width)...)
+	out = append(out, wrapList("ExclEmail", cert.ExcludedEmailAddresses, width)...)
+
+	out = append(out, wrapList("PermURI", cert.PermittedURIDomains, width)...)
+	out = append(out, wrapList("ExclURI", cert.ExcludedURIDomains, width)...)
+
 	return out
 }
 
