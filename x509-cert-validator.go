@@ -36,9 +36,11 @@ const (
 	DefaultMaxCRLDownloadBytes   int64 = 20 * 1024 * 1024 // 20MB (covers big public-CA CRLs + headroom)
 	DefaultMaxLocalFileBytes     int64 = 1 * 1024 * 1024  // 1MB
 	DefaultMaxRemoteCertFileSize int64 = 512 * 1024       // 512KB
-	DefaultMaxHTTPRedirects            = 3
-	DefaultHTTPTimeout                 = 10 * time.Second
-	DefaultTLSProbeTimeout             = 5 * time.Second
+
+	DefaultMaxHTTPRedirects = 3
+
+	DefaultHTTPTimeout     = 10 * time.Second
+	DefaultTLSProbeTimeout = 5 * time.Second
 )
 
 var (
@@ -82,28 +84,28 @@ func main() {
 		fmt.Fprintln(os.Stderr, "     (    and have verified its fingerprint manually.)")
 		fmt.Fprintln(os.Stderr, "     (    Trusting a malicious Root might lead to interception of your private data.)")
 
-		fmt.Fprintln(os.Stderr, "\n  6. Visualization:")
+		fmt.Fprintln(os.Stderr, "\n  5. Visualization:")
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -showGraph")
 
-		fmt.Fprintln(os.Stderr, "\n  7. Silent Mode (Short status line only):")
+		fmt.Fprintln(os.Stderr, "\n  6. Silent Mode (Short status line only):")
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -silent")
 		fmt.Fprintln(os.Stderr, "     > PASS [github.com] Serial:12345...")
 
-		fmt.Fprintln(os.Stderr, "\n  8. Ultra Silent (Exit code only):")
+		fmt.Fprintln(os.Stderr, "\n  7. Ultra Silent (Exit code only):")
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -ultrasilent")
 		fmt.Fprintln(os.Stderr, "     (echo $?)")
 	}
 
 	// --- CLI Arguments ---
 	certPath := flag.String("cert", "", "Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.")
-	rootPath := flag.String("root", "", "Path to Root CA PEM/DER (optional; uses System Roots if empty)")
+	rootPath := flag.String("root", "", "Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).")
 	dnsName := flag.String("dns", "", "Optional: Verify specific DNS name")
 	sni := flag.String("sni", "", "Optional: Override TLS SNI for live HTTPS probes (https://...)")
 	atTime := flag.String("at", "", "Optional: Validate at RFC3339 time")
 	enableCRL := flag.Bool("crl", false, "Enable certificate revocation checking (CRL)")
 	enableAIA := flag.Bool("aia", false, "Enable automatic AIA fetching")
-	createBundlePath := flag.String("createCAbundle", "", "Optional: Path to create/export the discovered CA bundle")
-	includeRoot := flag.Bool("includeRoot", false, "Include Root CA in the generated bundle")
+	createBundlePath := flag.String("createCAbundle", "", "Optional: Path to create/export CA bundle. On success, exports from verified chain(s).")
+	includeRoot := flag.Bool("includeRoot", false, "Include Root/Trust-Anchor certificate(s) in the generated bundle")
 	usage := flag.String("type", "any", "Validation type: server, client, or any")
 	showGraph := flag.Bool("showGraph", false, "Display ASCII graph of the verified chain")
 	silent := flag.Bool("silent", false, "Output only pass/fail status and cert ID")
@@ -147,7 +149,7 @@ func main() {
 		exitErr(fmt.Errorf("unsupported -cert scheme: file:// is not accepted; provide a local path or http(s) URL"))
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(*rootPath)), "file://") {
-		exitErr(fmt.Errorf("unsupported -root scheme: file:// is not accepted; provide a local path"))
+		exitErr(fmt.Errorf("unsupported -root scheme: file:// is not accepted; provide a local path or http(s) URL"))
 	}
 
 	sniOverride = strings.TrimSpace(*sni)
@@ -183,19 +185,19 @@ func main() {
 		exitErr(fmt.Errorf("unknown type: %s", *usage))
 	}
 
-	// --- 3. Load Roots (File or System) ---
+	// --- 3. Load Roots (File/URL or System) ---
 	var roots *x509.CertPool
 	var rootCerts []*x509.Certificate
-	var poolList []*x509.Certificate // For signature-based parent checks (AIA stop condition)
+	var poolList []*x509.Certificate // For signature-based parent checks + AIA walk
 
 	if *rootPath != "" {
-		rootSourceLabel = "Explicit User File"
-		logNormal("--- Loading Roots (File) ---\n")
+		rootSourceLabel = "Explicit User Root"
+		logNormal("--- Loading Roots (File/URL) ---\n")
 		roots = x509.NewCertPool()
 		for _, cert := range loadAll(*rootPath) {
 			printShortID("Root", cert)
 			if !cert.IsCA {
-				logNormal("  ⚠️ WARNING: Root is NOT marked as CA\n")
+				logNormal("  ⚠️ WARNING: Root input cert is NOT marked as CA\n")
 			}
 			roots.AddCert(cert)
 			rootCerts = append(rootCerts, cert)
@@ -215,9 +217,9 @@ func main() {
 		}
 	}
 
-	// --- 4. Load Intermediates ---
+	// --- 4. Load Intermediates (CLI args after flags) ---
 	inters := x509.NewCertPool()
-	var bundleCerts []*x509.Certificate
+	var discoveredIntermediates []*x509.Certificate // what we actually have locally (server-sent + AIA fetched + CLI inters)
 
 	if len(flag.Args()) > 0 {
 		logNormal("\n--- Loading Intermediates (CLI) ---\n")
@@ -231,14 +233,17 @@ func main() {
 					logNormal("  ⚠️ WARNING: Intermediate is NOT marked as CA\n")
 				}
 				inters.AddCert(cert)
-				bundleCerts = append(bundleCerts, cert)
+				discoveredIntermediates = append(discoveredIntermediates, cert)
 				poolList = append(poolList, cert)
 			}
 		}
 	}
 
-	// --- 5. Load Target Cert (File, HTTP, or HTTPS) ---
+	// --- 5. Load Target Cert (File, HTTP, or HTTPS probe) ---
 	targetCerts := loadAll(*certPath)
+	if len(targetCerts) == 0 {
+		exitErr(fmt.Errorf("no certificates loaded from -cert"))
+	}
 	leaf := targetCerts[0]
 	targetLeaf = leaf
 
@@ -249,7 +254,7 @@ func main() {
 			extra := targetCerts[i]
 			printShortID("Server-Sent", extra)
 			inters.AddCert(extra)
-			bundleCerts = append(bundleCerts, extra)
+			discoveredIntermediates = append(discoveredIntermediates, extra)
 			poolList = append(poolList, extra)
 		}
 	}
@@ -257,14 +262,13 @@ func main() {
 	printCertDetails("Target Certificate", leaf)
 	highlightLeafIssues(leaf)
 
-	// --- 6. AIA Fetching (Auto-Discovery) ---
+	// --- 6. AIA Fetching (Auto-Discovery, walk upward even if parent already known locally) ---
 	if *enableAIA {
 		logNormal("\n=== Automatic AIA Fetching ===\n")
 		currentCert := leaf
 		chainDepth := 0
-		maxDepth := 10
+		maxDepth := 12
 
-		// Extra loop-guard: stop if we see same cert again (cycle / self AIA / weird CA)
 		seen := make(map[string]bool)
 
 		for chainDepth < maxDepth {
@@ -276,30 +280,31 @@ func main() {
 			}
 			seen[curKey] = true
 
-			// Signature-based Check. Do we already have a valid issuer?
-			if findParentInList(currentCert, poolList) {
-				logNormal("ℹ️  Valid parent found locally. Stopping fetch.\n")
-				break
-			}
-
-			// Self-signed root check
 			if isSelfSigned(currentCert) {
-				logNormal("ℹ️  Reached Self-Signed Root. Stopping fetch.\n")
+				logNormal("ℹ️  Reached Self-Signed Root (%s). Stopping fetch.\n", cnOrDN(currentCert))
 				break
 			}
 
+			// 1) If parent is already in our local pool list, advance to it and keep walking.
+			if parent, ok := findParentInListCert(currentCert, poolList); ok && parent != nil {
+				logNormal("ℹ️  Found parent locally: %s. Continuing walk.\n", cnOrDN(parent))
+				currentCert = parent
+				chainDepth++
+				continue
+			}
+
+			// 2) Otherwise, try to fetch via AIA.
 			if len(currentCert.IssuingCertificateURL) == 0 {
-				logNormal("ℹ️  No AIA URL found. Cannot fetch parent.\n")
+				logNormal("ℹ️  No AIA URL found for %s. Cannot fetch parent.\n", cnOrDN(currentCert))
 				break
 			}
 
 			parentCert, err := fetchAIA(currentCert)
 			if err != nil {
-				logNormal("⚠️  AIA Fetch failed: %v\n", err)
+				logNormal("⚠️  AIA Fetch failed for %s: %v\n", cnOrDN(currentCert), err)
 				break
 			}
 
-			// Another loop guard: if AIA returns same cert we already saw, stop immediately
 			parentFP := sha256.Sum256(parentCert.Raw)
 			parentKey := hex.EncodeToString(parentFP[:])
 			if seen[parentKey] {
@@ -308,16 +313,18 @@ func main() {
 			}
 
 			if isSelfSigned(parentCert) {
-				logNormal("ℹ️  Fetched cert is Root CA (%s, Key=%s). Stopping fetch.\n", parentCert.Subject.CommonName, certPublicKeySummary(parentCert))
-				if *includeRoot && *createBundlePath != "" && *rootPath == "" {
-					rootCerts = append(rootCerts, parentCert)
-					logNormal("   (Added to export list as Root)\n")
-				}
+				logNormal("ℹ️  Fetched cert is Self-Signed Root (%s, Key=%s). Stopping fetch.\n",
+					cnOrDN(parentCert), certPublicKeySummary(parentCert))
+
+				// Do NOT automatically trust it for verification. Only keep for optional bundling output.
+				rootCerts = append(rootCerts, parentCert)
+				poolList = append(poolList, parentCert)
+
 				break
 			}
 
 			inters.AddCert(parentCert)
-			bundleCerts = append(bundleCerts, parentCert)
+			discoveredIntermediates = append(discoveredIntermediates, parentCert)
 			poolList = append(poolList, parentCert)
 			logNormal("✅ Added fetched certificate: %s (Key=%s)\n", parentCert.Subject, certPublicKeySummary(parentCert))
 
@@ -330,53 +337,13 @@ func main() {
 		}
 	}
 
-	// --- 7. Create CA Bundle ---
-	if *createBundlePath != "" {
-		logNormal("\n=== Creating CA Bundle at %s ===\n", *createBundlePath)
-		if len(bundleCerts) == 0 && (!*includeRoot || len(rootCerts) == 0) {
-			logNormal("⚠️  No certificates available to bundle.\n")
-		} else {
-			f, err := os.Create(*createBundlePath)
-			if err != nil {
-				logNormal("❌ Failed to create bundle file: %v\n", err)
-			} else {
-				count := 0
-				seen := make(map[string]bool)
-
-				writeCert := func(c *x509.Certificate) {
-					fp := fmt.Sprintf("%x", sha256.Sum256(c.Raw))
-					if seen[fp] {
-						return
-					}
-					if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
-						logNormal("❌ Error writing cert: %v\n", err)
-					}
-					seen[fp] = true
-					count++
-				}
-
-				for _, cert := range bundleCerts {
-					writeCert(cert)
-				}
-				if *includeRoot {
-					for _, root := range rootCerts {
-						writeCert(root)
-					}
-					logNormal("ℹ️  Included Root CA(s) in bundle.\n")
-				}
-				_ = f.Close()
-				logNormal("✅ Successfully bundled %d certificates.\n", count)
-			}
-		}
-	}
-
 	// Behavior: if -sni is set and -dns is empty, use SNI as DNS verification target.
 	effectiveDNS := strings.TrimSpace(*dnsName)
 	if effectiveDNS == "" && sniOverride != "" {
 		effectiveDNS = sniOverride
 	}
 
-	// --- 8. Verify Chain ---
+	// --- 7. Verify Chain ---
 	opts := x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: inters,
@@ -389,10 +356,39 @@ func main() {
 	chains, err := leaf.Verify(opts)
 	if err != nil {
 		handleVerifyError(err, *certPath, *rootPath, *usage)
+		// handleVerifyError exits
+		return
 	}
 
 	logNormal("✅ VALIDATION SUCCEEDED\n")
 
+	// --- 8. Create CA Bundle (FROM VERIFIED CHAIN(S)) ---
+	if *createBundlePath != "" {
+		logNormal("\n=== Creating CA Bundle at %s ===\n", *createBundlePath)
+
+		toBundle := buildBundleFromVerifiedChains(chains, *includeRoot)
+
+		// If for some reason Go didn't return anything to bundle, fall back to what we discovered locally.
+		if len(toBundle) == 0 {
+			toBundle = buildBundleFromDiscovered(discoveredIntermediates, rootCerts, *includeRoot)
+		}
+
+		if len(toBundle) == 0 {
+			logNormal("⚠️  No certificates available to bundle.\n")
+		} else {
+			written, rootsWritten, err := writeBundlePEM(*createBundlePath, toBundle)
+			if err != nil {
+				logNormal("❌ Failed to create bundle file: %v\n", err)
+			} else {
+				if *includeRoot && rootsWritten > 0 {
+					logNormal("ℹ️  Included %d Root/Anchor certificate(s) in bundle.\n", rootsWritten)
+				}
+				logNormal("✅ Successfully bundled %d certificates.\n", written)
+			}
+		}
+	}
+
+	// --- 9. Print Verified Chain(s) ---
 	for i, chain := range chains {
 		logNormal("\n--- Verified Chain Path %d ---\n", i+1)
 		if *showGraph {
@@ -436,7 +432,7 @@ func main() {
 		}
 	}
 
-	// --- 9. CRL Check (Strict) ---
+	// --- 10. CRL Check (Strict) ---
 	if *enableCRL {
 		logNormal("\n=== Checking CRLs ===\n")
 		if err := checkCRL(chains, currentTime); err != nil {
@@ -446,6 +442,94 @@ func main() {
 	}
 
 	exitSuccess()
+}
+
+// --- Bundle helpers ---
+
+// Build bundle from verified chains: include intermediates always, and include trust anchor only if includeRoot.
+// Never includes the leaf.
+func buildBundleFromVerifiedChains(chains [][]*x509.Certificate, includeRoot bool) []*x509.Certificate {
+	seen := make(map[string]bool)
+	var out []*x509.Certificate
+
+	for _, chain := range chains {
+		// chain[0] is leaf
+		for idx := 1; idx < len(chain); idx++ {
+			c := chain[idx]
+			// idx==len(chain)-1 is trust anchor (root/anchor)
+			if idx == len(chain)-1 && !includeRoot {
+				continue
+			}
+			fp := sha256.Sum256(c.Raw)
+			k := hex.EncodeToString(fp[:])
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Fallback bundle from what we discovered locally (server-sent + AIA fetched + CLI inters), plus optional roots list.
+// Never includes leaf (not provided here).
+func buildBundleFromDiscovered(inters []*x509.Certificate, roots []*x509.Certificate, includeRoot bool) []*x509.Certificate {
+	seen := make(map[string]bool)
+	var out []*x509.Certificate
+
+	add := func(c *x509.Certificate) {
+		if c == nil {
+			return
+		}
+		fp := sha256.Sum256(c.Raw)
+		k := hex.EncodeToString(fp[:])
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, c)
+	}
+
+	for _, c := range inters {
+		add(c)
+	}
+	if includeRoot {
+		for _, r := range roots {
+			add(r)
+		}
+	}
+	return out
+}
+
+func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsWritten int, err error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = f.Close() }()
+
+	seen := make(map[string]bool)
+	for _, c := range certs {
+		if c == nil {
+			continue
+		}
+		fp := sha256.Sum256(c.Raw)
+		k := hex.EncodeToString(fp[:])
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+
+		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
+			return written, rootsWritten, err
+		}
+		written++
+		if isSelfSigned(c) {
+			rootsWritten++
+		}
+	}
+	return written, rootsWritten, nil
 }
 
 // --- Helpers ---
@@ -488,8 +572,6 @@ func looksLikeInsecureAlgoErr(err error) bool {
 	}
 	// Go returns errors like:
 	//   x509: cannot verify signature: insecure algorithm SHA1-RSA
-	// or wraps it with:
-	//   ... possibly because of "... insecure algorithm ..."
 	return strings.Contains(err.Error(), "insecure algorithm")
 }
 
@@ -510,26 +592,36 @@ func parseRevocationListFromData(data []byte) (*x509.RevocationList, error) {
 	return x509.ParseRevocationList(data)
 }
 
-func findParentInList(child *x509.Certificate, pool []*x509.Certificate) bool {
+// Returns the parent certificate if found locally (subject/issuer match + signature check).
+func findParentInListCert(child *x509.Certificate, pool []*x509.Certificate) (*x509.Certificate, bool) {
+	if child == nil {
+		return nil, false
+	}
 	for _, parent := range pool {
+		if parent == nil {
+			continue
+		}
 		// Fast path: DER-equal issuer/subject
 		if bytes.Equal(child.RawIssuer, parent.RawSubject) {
 			if child.CheckSignatureFrom(parent) == nil {
-				return true
+				return parent, true
 			}
 			continue
 		}
 		// Fallback for rare DER encoding differences
 		if child.Issuer.String() == parent.Subject.String() {
 			if child.CheckSignatureFrom(parent) == nil {
-				return true
+				return parent, true
 			}
 		}
 	}
-	return false
+	return nil, false
 }
 
 func isSelfSigned(cert *x509.Certificate) bool {
+	if cert == nil {
+		return false
+	}
 	if cert.CheckSignatureFrom(cert) != nil {
 		return false
 	}
@@ -559,7 +651,6 @@ func handleVerifyError(err error, certPath, rootPath, usage string) {
 			logNormal("   $ openssl verify %s\n\n", certPath)
 		}
 	} else if hasInsecureAlgo {
-		// This is NOT “unsupported”; it's “policy refusal” (e.g., SHA1).
 		logNormal("\n⚠️  CRITICAL HINT: Go refused to verify due to an insecure signature algorithm policy (e.g., SHA1/MD5).\n")
 		if targetLeaf != nil {
 			logNormal("   Leaf Signature Algorithm: %s\n", targetLeaf.SignatureAlgorithm)
@@ -745,7 +836,6 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 				}
 
 				logNormal("   ✅ Valid CRL checked via %s\n", cdpURL)
-				_ = idx
 				// Do NOT break: another responding CDP might still report revoked.
 			}
 
@@ -806,7 +896,7 @@ func readWithLimit(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		// Keep original behavior: warn + parse truncated (will likely fail) rather than hard-fail here.
+		// Keep behavior: warn + parse truncated (will likely fail) rather than hard-fail here.
 		logNormal("⚠️  WARNING: Response reached size limit (%d bytes). It may be truncated.\n", limit)
 		data = data[:limit]
 	}
@@ -1084,7 +1174,7 @@ func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
 	return certs
 }
 
-// --- Graph view (updated: show full Name Constraints details when present) ---
+// --- Graph view (updated to show full Name Constraints details) ---
 
 func printChainGraph(chain []*x509.Certificate) {
 	if verbosity == LevelUltraSilent {
@@ -1093,6 +1183,7 @@ func printChainGraph(chain []*x509.Certificate) {
 
 	const w = 48
 	border := "+--------------------------------------------------+"
+
 	boxLine := func(s string) {
 		fmt.Printf("| %-48s |\n", truncate(s, w))
 	}
@@ -1126,7 +1217,6 @@ func printChainGraph(chain []*x509.Certificate) {
 		boxLine("Key: " + certPublicKeySummary(cert))
 		boxLine("Sig: " + cert.SignatureAlgorithm.String())
 
-		// Name constraints: summary + details (wrapped to box width)
 		for _, l := range ncLines {
 			boxLine(l)
 		}
@@ -1149,7 +1239,7 @@ func truncate(s string, length int) string {
 	return s
 }
 
-// --- Name Constraints (requested output) ---
+// --- Name Constraints ---
 
 func hasAnyNameConstraints(cert *x509.Certificate) bool {
 	if cert == nil {
@@ -1208,10 +1298,8 @@ func wrapList(label string, items []string, width int) []string {
 			continue
 		}
 
-		// push current line
 		lines = append(lines, truncate(cur, width))
 
-		// start new line
 		cur = contPrefix + it
 		if len(cur) > width {
 			lines = append(lines, truncate(cur, width))
@@ -1219,7 +1307,6 @@ func wrapList(label string, items []string, width int) []string {
 		}
 	}
 
-	// flush
 	if strings.TrimSpace(cur) != "" && cur != contPrefix {
 		lines = append(lines, truncate(cur, width))
 	}
@@ -1273,7 +1360,6 @@ func printNameConstraints(prefix string, cert *x509.Certificate) {
 		crit = " (critical)"
 	}
 
-	// Keep it compact, but explicit.
 	logNormal("%s    Name Constraints:%s\n", prefix, crit)
 
 	if len(cert.PermittedDNSDomains) > 0 {
@@ -1305,7 +1391,7 @@ func printNameConstraints(prefix string, cert *x509.Certificate) {
 	}
 }
 
-// --- Key/size helpers (requested output) ---
+// --- Key helpers ---
 
 func certPublicKeySummary(cert *x509.Certificate) string {
 	if cert == nil {
@@ -1338,7 +1424,6 @@ func publicKeySummary(pub any) string {
 		}
 		return "ECDSA-?"
 	case ed25519.PublicKey:
-		// ed25519.PublicKey is []byte (32 bytes).
 		return "Ed25519-256"
 	case *dsa.PublicKey:
 		if k == nil || k.P == nil {
@@ -1346,7 +1431,6 @@ func publicKeySummary(pub any) string {
 		}
 		return fmt.Sprintf("DSA-%d", k.P.BitLen())
 	default:
-		// Keep it explicit rather than guessing.
 		return fmt.Sprintf("Unknown(%T)", pub)
 	}
 }
