@@ -9,7 +9,7 @@
 #   KEEP_TMP=1                  # keep temp dir
 #   TIMEOUT_SECS=15             # per-test timeout
 #   OPENSSL_KEYGEN_QUIET=1      # suppress RSA/EC keygen progress (default: 1)
-#   OPENSSL_QUIET=0             # if 1, suppress most openssl stdout/stderr (default: 1)
+#   OPENSSL_QUIET=1             # if 1, suppress most openssl stdout/stderr (default: 1)
 #   CRL_DAYS=30                 # CRL validity for openssl ca -gencrl (default: 30)
 #   EXTRA_CRYPTO=0              # if 1, also generate/run extra RSA/EC tests not in canonical list
 
