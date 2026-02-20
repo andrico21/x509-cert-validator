@@ -353,11 +353,10 @@ func main() {
 	}
 
 	logNormal("\n=== Verifying Chain ===\n")
+	logNormal("Root Trust: %s\n", rootSourceLabel)
 	chains, err := leaf.Verify(opts)
 	if err != nil {
 		handleVerifyError(err, *certPath, *rootPath, *usage)
-		// handleVerifyError exits
-		return
 	}
 
 	logNormal("✅ VALIDATION SUCCEEDED\n")
@@ -365,6 +364,11 @@ func main() {
 	// --- 8. Create CA Bundle (FROM VERIFIED CHAIN(S)) ---
 	if *createBundlePath != "" {
 		logNormal("\n=== Creating CA Bundle at %s ===\n", *createBundlePath)
+
+		if *includeRoot && rootSourceLabel != "Explicit User Root" {
+			logNormal("⚠️  WARNING: -includeRoot has no effect: roots come from %s (no explicit root file provided via -root).\n", rootSourceLabel)
+			logNormal("   System root certificates cannot be exported into the bundle. Use -root <file> to provide an explicit root.\n")
+		}
 
 		toBundle := buildBundleFromVerifiedChains(chains, *includeRoot)
 
@@ -383,7 +387,7 @@ func main() {
 				if *includeRoot && rootsWritten > 0 {
 					logNormal("ℹ️  Included %d Root/Anchor certificate(s) in bundle.\n", rootsWritten)
 				}
-				logNormal("✅ Successfully bundled %d certificates.\n", written)
+				logNormal("✅ Successfully bundled %d certificates. (Root Trust: %s)\n", written, rootSourceLabel)
 			}
 		}
 	}
@@ -503,11 +507,11 @@ func buildBundleFromDiscovered(inters []*x509.Certificate, roots []*x509.Certifi
 }
 
 func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsWritten int, err error) {
-	f, err := os.Create(path)
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer func() { _ = f.Close() }()
 
 	seen := make(map[string]bool)
 	for _, c := range certs {
@@ -522,6 +526,8 @@ func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsW
 		seen[k] = true
 
 		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmpPath)
 			return written, rootsWritten, err
 		}
 		written++
@@ -529,6 +535,17 @@ func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsW
 			rootsWritten++
 		}
 	}
+
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return written, rootsWritten, err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return written, rootsWritten, err
+	}
+
 	return written, rootsWritten, nil
 }
 
@@ -695,6 +712,32 @@ func highlightLeafIssues(cert *x509.Certificate) {
 		logNormal("⚠️  WARNING: Weak signature algorithm: %v\n", cert.SignatureAlgorithm)
 	}
 
+	now := time.Now()
+	if now.After(cert.NotAfter) {
+		logNormal("⚠️  WARNING: Certificate is EXPIRED (NotAfter: %s, %s ago).\n",
+			cert.NotAfter.Format(time.RFC3339),
+			now.Sub(cert.NotAfter).Truncate(time.Second))
+	} else if now.Before(cert.NotBefore) {
+		logNormal("⚠️  WARNING: Certificate is NOT YET VALID (NotBefore: %s, starts in %s).\n",
+			cert.NotBefore.Format(time.RFC3339),
+			cert.NotBefore.Sub(now).Truncate(time.Second))
+	} else {
+		remaining := cert.NotAfter.Sub(now)
+		totalLifetime := cert.NotAfter.Sub(cert.NotBefore)
+		threshold := totalLifetime / 10
+		floor := 7 * 24 * time.Hour
+		if floor > totalLifetime/2 {
+			floor = totalLifetime / 2
+		}
+		if threshold < floor {
+			threshold = floor
+		}
+		if remaining < threshold {
+			logNormal("⚠️  NOTICE: Certificate expires soon (%s remaining, NotAfter: %s).\n",
+				remaining.Truncate(time.Minute), cert.NotAfter.Format(time.RFC3339))
+		}
+	}
+
 	if len(cert.DNSNames) == 0 && len(cert.IPAddresses) == 0 {
 		logNormal("⚠️  WARNING: Certificate has no SAN entries.\n")
 	}
@@ -713,7 +756,15 @@ type crlCacheEntry struct {
 // - Missing ThisUpdate/NextUpdate => warning AND treated as invalid for -crl.
 // - If multiple VALID CRLs respond: if ANY indicates revoked => FAIL with clear message.
 func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
-	client := &http.Client{Timeout: DefaultHTTPTimeout}
+	client := &http.Client{
+		Timeout: DefaultHTTPTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= DefaultMaxHTTPRedirects {
+				return fmt.Errorf("stopped after %d redirects", DefaultMaxHTTPRedirects)
+			}
+			return nil
+		},
+	}
 
 	// Cache CRLs by URL (avoids repeated downloads across chains)
 	crlCache := make(map[string]crlCacheEntry)
@@ -763,9 +814,22 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 				} else {
 					logNormal("⬇️  Fetching CRL for '%s' [%d/%d]: %s\n", cnOrDN(child), idx+1, len(child.CRLDistributionPoints), cdpURL)
 
-					resp, err := client.Get(cdpURL)
+					req, err := http.NewRequest("GET", cdpURL, nil)
+					if err != nil {
+						errMsgs = append(errMsgs, fmt.Sprintf("%s: bad request: %v", cdpURL, err))
+						continue
+					}
+					req.Header.Set("User-Agent", "x509-cert-validator/1.0")
+
+					resp, err := client.Do(req)
 					if err != nil {
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", cdpURL, err))
+						continue
+					}
+
+					if resp.StatusCode != 200 {
+						_ = resp.Body.Close()
+						errMsgs = append(errMsgs, fmt.Sprintf("%s: HTTP %d", cdpURL, resp.StatusCode))
 						continue
 					}
 
@@ -773,11 +837,6 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 					_ = resp.Body.Close()
 					if err != nil {
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: read failed (%v)", cdpURL, err))
-						continue
-					}
-
-					if resp.StatusCode != 200 {
-						errMsgs = append(errMsgs, fmt.Sprintf("%s: HTTP %d", cdpURL, resp.StatusCode))
 						continue
 					}
 
@@ -848,7 +907,15 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 }
 
 func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
-	client := &http.Client{Timeout: DefaultHTTPTimeout}
+	client := &http.Client{
+		Timeout: DefaultHTTPTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= DefaultMaxHTTPRedirects {
+				return fmt.Errorf("stopped after %d redirects", DefaultMaxHTTPRedirects)
+			}
+			return nil
+		},
+	}
 	var lastErr error
 
 	for i, u := range cert.IssuingCertificateURL {
@@ -857,10 +924,25 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 		}
 		logNormal("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
 
-		resp, err := client.Get(u)
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			logNormal("   ⚠️  Bad Request: %v\n", err)
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "x509-cert-validator/1.0")
+
+		resp, err := client.Do(req)
 		if err != nil {
 			logNormal("   ⚠️  Connection Failed: %v\n", err)
 			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			_ = resp.Body.Close()
+			logNormal("   ⚠️  HTTP Error: %d\n", resp.StatusCode)
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
 			continue
 		}
 
@@ -869,12 +951,6 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 		if err != nil {
 			logNormal("   ⚠️  Read Failed: %v\n", err)
 			lastErr = err
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			logNormal("   ⚠️  HTTP Error: %d\n", resp.StatusCode)
-			lastErr = fmt.Errorf("status %d", resp.StatusCode)
 			continue
 		}
 
@@ -896,9 +972,7 @@ func readWithLimit(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		// Keep behavior: warn + parse truncated (will likely fail) rather than hard-fail here.
-		logNormal("⚠️  WARNING: Response reached size limit (%d bytes). It may be truncated.\n", limit)
-		data = data[:limit]
+		return nil, fmt.Errorf("response exceeded size limit (%d bytes); increase the corresponding -max* flag if needed", limit)
 	}
 	return data, nil
 }
@@ -1039,7 +1113,7 @@ func downloadCertFile(urlStr string) []*x509.Certificate {
 		exitErr(fmt.Errorf("invalid url: %v", err))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		exitErr(fmt.Errorf("unsupported protocol scheme: %s", u.Scheme))
+		exitErr(fmt.Errorf("unsupported protocol scheme: %s (only http/https allowed)", u.Scheme))
 	}
 	logNormal("⬇️  Downloading certificate file: %s ...\n", urlStr)
 
