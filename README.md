@@ -6,9 +6,28 @@ AI-assisted written code, however it's well-tested.
 ## Build
 
 ```shell
-$  go build -trimpath -ldflags="-s -w" -buildmode=pie -o ./x509-cert-validator ./x509-cert-validator.go
-# or FIPS
-$ GOEXPERIMENT=boringcrypto  go build -trimpath -ldflags="-s -w" -buildmode=pie -o ./x509-cert-validator ./x509-cert-validator.go
+# Development
+go build -o ./x509-cert-validator .
+
+# Production (v1.0)
+go build -buildmode=pie -trimpath \
+  -ldflags="-s -w -X main.version=1.0" \
+  -o ./x509-cert-validator .
+
+# Production + FIPS
+GOEXPERIMENT=boringcrypto go build -buildmode=pie -trimpath \
+  -ldflags="-s -w -X main.version=1.0" \
+  -o ./x509-cert-validator .
+
+# Cross-compile (e.g. Linux ARM64)
+GOOS=linux GOARCH=arm64 go build -buildmode=pie -trimpath \
+  -ldflags="-s -w -X main.version=1.0" \
+  -o ./x509-cert-validator-linux-arm64 .
+```
+
+Check version:
+```shell
+./x509-cert-validator -version
 ```
 ## Goals
 Actually the goal of this tool is to confirm if two x509-related Go libraries validate CA certificate name constraints the same way as OpenSSL below
