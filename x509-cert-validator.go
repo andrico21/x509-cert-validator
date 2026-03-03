@@ -43,6 +43,9 @@ const (
 	DefaultTLSProbeTimeout = 5 * time.Second
 )
 
+// version is set at build time via -ldflags "-X main.version=1.0"
+var version = "dev"
+
 var (
 	verbosity          int
 	targetLeaf         *x509.Certificate // Global reference for error reporting
@@ -110,6 +113,7 @@ func main() {
 	showGraph := flag.Bool("showGraph", false, "Display ASCII graph of the verified chain")
 	silent := flag.Bool("silent", false, "Output only pass/fail status and cert ID")
 	ultraSilent := flag.Bool("ultrasilent", false, "No output, exit code only (0=Pass, 1=Fail)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 
 	// --- Size limit flags ---
 	maxAIA := flag.Int64("maxaia", DefaultMaxAIADownloadBytes, "Max bytes to download per AIA issuer fetch")
@@ -118,6 +122,11 @@ func main() {
 	maxRemote := flag.Int64("maxcert", DefaultMaxRemoteCertFileSize, "Max bytes to download for remote cert file (http/https)")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("x509-cert-validator %s %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
+		os.Exit(0)
+	}
 
 	// --- Apply size limits ---
 	if *maxAIA <= 0 || *maxCRL <= 0 || *maxLocal <= 0 || *maxRemote <= 0 {
