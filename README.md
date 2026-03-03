@@ -1,5 +1,11 @@
 # x509-cert-validator
-Handy tool to debug certificate-related issues
+There's no "black magic" here guys: OpenSSL and certutil can do absolutely everything this tool does.
+
+The major difference is convenience. Instead of wrestling with OS-specific flags or deciphering error codes, this is a 1-stop tool designed to give you a clear, human-readable "why" when a certificate fails.
+
+No CLI gymnastics, human-readable results: get a direct explanation instead of "Error 20 at depth 0". The same behavior and output whether you’re on Linux, Windows, or macOS.
+
+It’s just a faster way to validate certificates without the overhead and automatic certificate-bundle creation for lazy-arses.
 
 AI-assisted written code, however it's well-tested.
 
