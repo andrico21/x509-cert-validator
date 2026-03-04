@@ -15,19 +15,19 @@ AI-assisted written code, however it's well-tested.
 # Development
 go build -o ./x509-cert-validator .
 
-# Production (v1.0)
+# Production (v1.1)
 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.0" \
+  -ldflags="-s -w -X main.version=1.1" \
   -o ./x509-cert-validator .
 
 # Production + FIPS
 GOEXPERIMENT=boringcrypto go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.0" \
+  -ldflags="-s -w -X main.version=1.1" \
   -o ./x509-cert-validator .
 
 # Cross-compile (e.g. Linux ARM64)
 GOOS=linux GOARCH=arm64 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.0" \
+  -ldflags="-s -w -X main.version=1.1" \
   -o ./x509-cert-validator-linux-arm64 .
 ```
 
@@ -60,6 +60,8 @@ Usage of ./x509-cert-validator:
         Enable certificate revocation checking (CRL)
   -dns string
         Optional: Verify specific DNS name
+  -fp-show-all
+        Show alternative fingerprint algo values (+MD5, SHA-384, SHA-512)
   -includeRoot
         Include Root/Trust-Anchor certificate(s) in the generated bundle
   -maxaia int
@@ -82,6 +84,8 @@ Usage of ./x509-cert-validator:
         Validation type: server, client, or any (default "any")
   -ultrasilent
         No output, exit code only (0=Pass, 1=Fail)
+  -version
+        Print version and exit
 
 EXAMPLES:
   1. Live HTTPS Probe (Check server's current chain):
@@ -127,8 +131,9 @@ Validation Time: 2026-02-13T22:56:41+04:00
 === Target Certificate Certificate Details ===
 Subject:     CN=go.dev
 Issuer:      CN=WR3,O=Google Trust Services,C=US
-Fingerprint: 9a03722804eb0cf1ec2742c68db052b01501e9a47c597d64d41aa6938681a56e
-Serial:      286526495291874000263485908549286454672
+FP(sha1):    <sha1 hash>
+FP(sha256):  9a03722804eb0cf1ec2742c68db052b01501e9a47c597d64d41aa6938681a56e
+Serial:      d7882e5fb8e25988b37a84d4862b36f0
 Validity:    2026-02-10 08:12:27 +0000 UTC to 2026-05-11 09:01:37 +0000 UTC
 SAN (DNS):   [go.dev]
 AIA (Issuer): [http://i.pki.goog/wr3.crt]
@@ -147,11 +152,29 @@ CRL DPs:     [http://c.pki.goog/wr3/PBTgX3IAo5A.crl]
 
 --- Verified Chain Path 1 ---
 [0] Subject: CN=go.dev
-    Fingerprint: 9a03722804eb0cf1
+    Issuer:  CN=WR3,O=Google Trust Services,C=US
+    FP(sha1):   <sha1 hash>
+    FP(sha256): 9a03722804eb0cf1ec2742c68db052b01501e9a47c597d64d41aa6938681a56e
+    Serial: d7882e5fb8e25988b37a84d4862b36f0
+    PubKey: ECDSA-P-256(256)
+    SigAlg: SHA256-RSA
+    SignedByKey: RSA-2048
   [1] Subject: CN=WR3,O=Google Trust Services,C=US
-      Fingerprint: 2fe357db13751ff9
-    [2] Subject: CN=GTS Root R1,O=Google Trust Services LLC,C=US
-        Fingerprint: d947432abde7b7fa
+      Issuer:  CN=GTS Root R1,O=Google Trust Services LLC,C=US
+      FP(sha1):   <sha1 hash>
+      FP(sha256): 2fe357db13751ff9...
+      Serial: <hex serial>
+      PubKey: RSA-2048
+      SigAlg: SHA256-RSA
+      SignedByKey: RSA-4096
+    [2] Subject: CN=GTS Root R1,O=Google Trust Services LLC,C=US (self-signed)
+        Issuer:  CN=GTS Root R1,O=Google Trust Services LLC,C=US
+        FP(sha1):   <sha1 hash>
+        FP(sha256): d947432abde7b7fa...
+        Serial: <hex serial>
+        PubKey: RSA-4096
+        SigAlg: SHA384-RSA
+        SignedByKey: RSA-4096
 
 === Checking CRLs ===
 ⬇️  Fetching CRL for 'go.dev' [1/1]: http://c.pki.goog/wr3/PBTgX3IAo5A.crl
@@ -179,8 +202,9 @@ Validation Time: 2026-02-15T20:46:39+04:00
 === Target Certificate Certificate Details ===
 Subject:     CN=*.google.com
 Issuer:      CN=WR2,O=Google Trust Services,C=US
-Fingerprint: 977eca18f030b2d8f5c6f872e1cf30b5ceea5dcf26ac0bbbcf1723e233e05612
-Serial:      52229643006680258647429274309399474431
+FP(sha1):    <sha1 hash>
+FP(sha256):  977eca18f030b2d8f5c6f872e1cf30b5ceea5dcf26ac0bbbcf1723e233e05612
+Serial:      2741bdc24e9d339a3340cff0234df4ff
 Validity:    2026-01-26 08:39:20 +0000 UTC to 2026-04-20 08:39:19 +0000 UTC
 Public Key:  ECDSA-P-256(256)
 Sig Alg:     SHA256-RSA
@@ -217,8 +241,9 @@ Validation Time: 2026-02-15T20:48:04+04:00
 === Target Certificate Certificate Details ===
 Subject:     CN=*.google.com
 Issuer:      CN=WR2,O=Google Trust Services,C=US
-Fingerprint: 977eca18f030b2d8f5c6f872e1cf30b5ceea5dcf26ac0bbbcf1723e233e05612
-Serial:      52229643006680258647429274309399474431
+FP(sha1):    <sha1 hash>
+FP(sha256):  977eca18f030b2d8f5c6f872e1cf30b5ceea5dcf26ac0bbbcf1723e233e05612
+Serial:      2741bdc24e9d339a3340cff0234df4ff
 Validity:    2026-01-26 08:39:20 +0000 UTC to 2026-04-20 08:39:19 +0000 UTC
 Public Key:  ECDSA-P-256(256)
 Sig Alg:     SHA256-RSA
@@ -244,7 +269,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: GTS Root R1                              |
 | Key: RSA-4096                                    |
 | Sig: SHA384-RSA                                  |
-| SN: 159662320309726417404178440727               |
+| SN: 77d8d39a786fa7e8ba11ceab96e2                 |
 +--------------------------------------------------+
       |
       V
@@ -254,7 +279,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: GTS Root R1                              |
 | Key: RSA-2048                                    |
 | Sig: SHA256-RSA                                  |
-| SN: 170058220837755766831192027518741805976      |
+| SN: 8011a64a4817633ced5e79a598c98b08             |
 +--------------------------------------------------+
       |
       V
@@ -264,7 +289,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: WR2                                      |
 | Key: ECDSA-P-256(256)                            |
 | Sig: SHA256-RSA                                  |
-| SN: 52229643006680258647429274309399474431       |
+| SN: 2741bdc24e9d339a3340cff0234df4ff             |
 +--------------------------------------------------+
 
 
@@ -276,7 +301,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: GlobalSign Root CA                       |
 | Key: RSA-2048                                    |
 | Sig: SHA1-RSA                                    |
-| SN: 4835703278459707669005204                    |
+| SN: 040000000001154b5ac394                       |
 +--------------------------------------------------+
       |
       V
@@ -286,7 +311,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: GlobalSign Root CA                       |
 | Key: RSA-4096                                    |
 | Sig: SHA256-RSA                                  |
-| SN: 159159747900478145820483398898491642637      |
+| SN: 77bd0d6cdb36f91aea210fc4f058d30d             |
 +--------------------------------------------------+
       |
       V
@@ -296,7 +321,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: GTS Root R1                              |
 | Key: RSA-2048                                    |
 | Sig: SHA256-RSA                                  |
-| SN: 170058220837755766831192027518741805976      |
+| SN: 8011a64a4817633ced5e79a598c98b08             |
 +--------------------------------------------------+
       |
       V
@@ -306,7 +331,7 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 | Issuer: WR2                                      |
 | Key: ECDSA-P-256(256)                            |
 | Sig: SHA256-RSA                                  |
-| SN: 52229643006680258647429274309399474431       |
+| SN: 2741bdc24e9d339a3340cff0234df4ff             |
 +--------------------------------------------------+
 
 

@@ -5,8 +5,11 @@ import (
 	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/md5"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -59,6 +62,7 @@ var (
 	maxCRLDownloadBytes   int64 = DefaultMaxCRLDownloadBytes
 	maxLocalFileBytes     int64 = DefaultMaxLocalFileBytes
 	maxRemoteCertFileSize int64 = DefaultMaxRemoteCertFileSize
+	showAllFP             bool
 )
 
 func main() {
@@ -114,6 +118,7 @@ func main() {
 	silent := flag.Bool("silent", false, "Output only pass/fail status and cert ID")
 	ultraSilent := flag.Bool("ultrasilent", false, "No output, exit code only (0=Pass, 1=Fail)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	fpShowAll := flag.Bool("fp-show-all", false, "Show alternative fingerprint algo values (+MD5, SHA-384, SHA-512)")
 
 	// --- Size limit flags ---
 	maxAIA := flag.Int64("maxaia", DefaultMaxAIADownloadBytes, "Max bytes to download per AIA issuer fetch")
@@ -136,6 +141,7 @@ func main() {
 	maxCRLDownloadBytes = *maxCRL
 	maxLocalFileBytes = *maxLocal
 	maxRemoteCertFileSize = *maxRemote
+	showAllFP = *fpShowAll
 
 	// --- Verbosity ---
 	if *ultraSilent {
@@ -424,10 +430,18 @@ func main() {
 					self = " (self-signed)"
 				}
 
-				sum := sha256.Sum256(cert.Raw)
 				logNormal("%s[%d] Subject: %s%s\n", prefix, depth, subCN, self)
 				logNormal("%s    Issuer:  %s\n", prefix, issCN)
-				logNormal("%s    FP(sha256): %x\n", prefix, sum[:8])
+				if showAllFP {
+					logNormal("%s    FP(md5):    %x\n", prefix, md5.Sum(cert.Raw))
+				}
+				logNormal("%s    FP(sha1):   %x\n", prefix, sha1.Sum(cert.Raw))
+				logNormal("%s    FP(sha256): %x\n", prefix, sha256.Sum256(cert.Raw))
+				if showAllFP {
+					logNormal("%s    FP(sha384): %x\n", prefix, sha512.Sum384(cert.Raw))
+					logNormal("%s    FP(sha512): %x\n", prefix, sha512.Sum512(cert.Raw))
+				}
+				logNormal("%s    Serial: %s\n", prefix, serialHex(cert))
 				logNormal("%s    PubKey: %s\n", prefix, certPublicKeySummary(cert))
 				logNormal("%s    SigAlg: %s\n", prefix, cert.SignatureAlgorithm)
 
@@ -568,6 +582,18 @@ func cnOrDN(c *x509.Certificate) string {
 		return c.Subject.CommonName
 	}
 	return c.Subject.String()
+}
+
+// serialHex returns the certificate serial number in plain hex.
+func serialHex(cert *x509.Certificate) string {
+	if cert == nil || cert.SerialNumber == nil {
+		return "?"
+	}
+	b := cert.SerialNumber.Bytes()
+	if len(b) == 0 {
+		return "00"
+	}
+	return hex.EncodeToString(b)
 }
 
 func flagUnsupportedIfNeeded(cert *x509.Certificate) {
@@ -899,7 +925,7 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 				for _, revoked := range crl.RevokedCertificateEntries {
 					if child.SerialNumber.Cmp(revoked.SerialNumber) == 0 {
 						return fmt.Errorf("certificate '%s' (Serial=%s) is REVOKED according to CRL %s",
-							cnOrDN(child), child.SerialNumber.String(), cdpURL)
+							cnOrDN(child), serialHex(child), cdpURL)
 					}
 				}
 
@@ -1004,7 +1030,7 @@ func exitErr(err error) {
 			if id == "" {
 				id = "No-CN"
 			}
-			sn = targetLeaf.SerialNumber.String()
+			sn = serialHex(targetLeaf)
 		}
 		fmt.Fprintf(os.Stderr, "FAIL [%s] Serial:%s : %v\n", id, sn, err)
 		os.Exit(1)
@@ -1025,7 +1051,7 @@ func exitSuccess() {
 			if id == "" {
 				id = "No-CN"
 			}
-			sn = targetLeaf.SerialNumber.String()
+			sn = serialHex(targetLeaf)
 		}
 		fmt.Printf("PASS [%s] Serial:%s\n", id, sn)
 		os.Exit(0)
@@ -1044,8 +1070,16 @@ func printCertDetails(label string, cert *x509.Certificate) {
 	logNormal("\n=== %s Certificate Details ===\n", label)
 	logNormal("Subject:     %s\n", cert.Subject)
 	logNormal("Issuer:      %s\n", cert.Issuer)
-	logNormal("Fingerprint: %x\n", sha256.Sum256(cert.Raw))
-	logNormal("Serial:      %s\n", cert.SerialNumber)
+	if showAllFP {
+		logNormal("FP(md5):     %x\n", md5.Sum(cert.Raw))
+	}
+	logNormal("FP(sha1):    %x\n", sha1.Sum(cert.Raw))
+	logNormal("FP(sha256):  %x\n", sha256.Sum256(cert.Raw))
+	if showAllFP {
+		logNormal("FP(sha384):  %x\n", sha512.Sum384(cert.Raw))
+		logNormal("FP(sha512):  %x\n", sha512.Sum512(cert.Raw))
+	}
+	logNormal("Serial:      %s\n", serialHex(cert))
 	logNormal("Validity:    %s to %s\n", cert.NotBefore, cert.NotAfter)
 
 	// Requested: key type + length, plus signature algorithm
@@ -1264,14 +1298,16 @@ func printChainGraph(chain []*x509.Certificate) {
 		return
 	}
 
-	const w = 48
-	border := "+--------------------------------------------------+"
-
-	boxLine := func(s string) {
-		fmt.Printf("| %-48s |\n", truncate(s, w))
+	// First pass: collect fixed fields per cert and determine box width.
+	type certInfo struct {
+		role, subCN, issCN, key, sig, sn string
+		cert                             *x509.Certificate
 	}
+	var infos []certInfo
 
-	fmt.Println()
+	minW := 48
+	maxLen := minW
+
 	for i := len(chain) - 1; i >= 0; i-- {
 		cert := chain[i]
 		role := "INTERMEDIATE"
@@ -1291,23 +1327,50 @@ func printChainGraph(chain []*x509.Certificate) {
 			issCN = "No-CN"
 		}
 
-		ncLines := buildNameConstraintLines(cert, w)
+		info := certInfo{
+			role:  role,
+			subCN: subCN,
+			issCN: issCN,
+			key:   certPublicKeySummary(cert),
+			sig:   cert.SignatureAlgorithm.String(),
+			sn:    serialHex(cert),
+			cert:  cert,
+		}
+		infos = append(infos, info)
+
+		for _, s := range []string{role, "CN: " + subCN, "Issuer: " + issCN, "Key: " + info.key, "Sig: " + info.sig, "SN: " + info.sn} {
+			if len(s) > maxLen {
+				maxLen = len(s)
+			}
+		}
+	}
+
+	// Second pass: print with the computed width.
+	w := maxLen
+	border := "+" + strings.Repeat("-", w+2) + "+"
+	boxLine := func(s string) {
+		fmt.Printf("| %-*s |\n", w, truncate(s, w))
+	}
+
+	fmt.Println()
+	for idx, info := range infos {
+		ncLines := buildNameConstraintLines(info.cert, w)
 
 		fmt.Println(border)
-		boxLine(role)
-		boxLine("CN: " + subCN)
-		boxLine("Issuer: " + issCN)
-		boxLine("Key: " + certPublicKeySummary(cert))
-		boxLine("Sig: " + cert.SignatureAlgorithm.String())
+		boxLine(info.role)
+		boxLine("CN: " + info.subCN)
+		boxLine("Issuer: " + info.issCN)
+		boxLine("Key: " + info.key)
+		boxLine("Sig: " + info.sig)
 
 		for _, l := range ncLines {
 			boxLine(l)
 		}
 
-		boxLine("SN: " + cert.SerialNumber.String())
+		boxLine("SN: " + info.sn)
 		fmt.Println(border)
 
-		if i > 0 {
+		if idx < len(infos)-1 {
 			fmt.Println("      |")
 			fmt.Println("      V")
 		}
