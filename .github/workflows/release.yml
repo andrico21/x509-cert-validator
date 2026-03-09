@@ -47,15 +47,18 @@ jobs:
             -ldflags="-s -w -X main.version=${VERSION}" \
             -o x509-cert-validator-${{ matrix.suffix }} .
 
+      - name: Compress binary
+        run: zip -9 x509-cert-validator-${{ matrix.suffix }}.zip x509-cert-validator-${{ matrix.suffix }}
+
       - name: Generate checksum
-        run: sha256sum x509-cert-validator-${{ matrix.suffix }} > x509-cert-validator-${{ matrix.suffix }}.sha256
+        run: sha256sum x509-cert-validator-${{ matrix.suffix }}.zip > x509-cert-validator-${{ matrix.suffix }}.zip.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: x509-cert-validator-${{ matrix.suffix }}
           path: |
-            x509-cert-validator-${{ matrix.suffix }}
-            x509-cert-validator-${{ matrix.suffix }}.sha256
+            x509-cert-validator-${{ matrix.suffix }}.zip
+            x509-cert-validator-${{ matrix.suffix }}.zip.sha256
 
   release:
     needs: build
@@ -72,4 +75,5 @@ jobs:
         with:
           body_path: RELEASE_NOTES.md
           files: |
-            x509-cert-validator-*
+            x509-cert-validator-*.zip
+            x509-cert-validator-*.zip.sha256
