@@ -42,7 +42,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${GITHUB_REF#refs/tags/}
           go build -buildmode=pie -trimpath \
             -ldflags="-s -w -X main.version=${VERSION}" \
             -o x509-cert-validator-${{ matrix.suffix }} .
