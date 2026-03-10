@@ -670,6 +670,29 @@ func findParentInListCert(child *x509.Certificate, pool []*x509.Certificate) (*x
 	return nil, false
 }
 
+func humanDuration(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	days := int(d.Hours()) / 24
+	d -= time.Duration(days) * 24 * time.Hour
+	hours := int(d.Hours())
+	d -= time.Duration(hours) * time.Hour
+	minutes := int(d.Minutes())
+	d -= time.Duration(minutes) * time.Minute
+	seconds := int(d.Seconds())
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 func isSelfSigned(cert *x509.Certificate) bool {
 	if cert == nil {
 		return false
@@ -716,7 +739,11 @@ func handleVerifyError(err error, certPath, rootPath, usage string) {
 			logNormal("   $ openssl verify %s\n\n", certPath)
 		}
 	} else if strings.Contains(err.Error(), "authority") {
-		logNormal("  (Tip: Ensure intermediates are provided or use -aia)\n")
+		if targetLeaf != nil && isSelfSigned(targetLeaf) {
+			logNormal("  (Tip: Certificate is self-signed and not in the system trust store. Use -root to trust it explicitly.)\n")
+		} else {
+			logNormal("  (Tip: Ensure intermediates are provided or use -aia)\n")
+		}
 	} else if strings.Contains(err.Error(), "KeyUsage") || strings.Contains(err.Error(), "key usage") {
 		logNormal("  (Tip: Check if the certificate is valid for the requested type: %s)\n", usage)
 	} else if strings.Contains(err.Error(), "x509") && strings.Contains(err.Error(), "valid for") {
@@ -751,11 +778,11 @@ func highlightLeafIssues(cert *x509.Certificate) {
 	if now.After(cert.NotAfter) {
 		logNormal("⚠️  WARNING: Certificate is EXPIRED (NotAfter: %s, %s ago).\n",
 			cert.NotAfter.Format(time.RFC3339),
-			now.Sub(cert.NotAfter).Truncate(time.Second))
+			humanDuration(now.Sub(cert.NotAfter)))
 	} else if now.Before(cert.NotBefore) {
 		logNormal("⚠️  WARNING: Certificate is NOT YET VALID (NotBefore: %s, starts in %s).\n",
 			cert.NotBefore.Format(time.RFC3339),
-			cert.NotBefore.Sub(now).Truncate(time.Second))
+			humanDuration(cert.NotBefore.Sub(now)))
 	} else {
 		remaining := cert.NotAfter.Sub(now)
 		totalLifetime := cert.NotAfter.Sub(cert.NotBefore)
@@ -769,7 +796,7 @@ func highlightLeafIssues(cert *x509.Certificate) {
 		}
 		if remaining < threshold {
 			logNormal("⚠️  NOTICE: Certificate expires soon (%s remaining, NotAfter: %s).\n",
-				remaining.Truncate(time.Minute), cert.NotAfter.Format(time.RFC3339))
+				humanDuration(remaining), cert.NotAfter.Format(time.RFC3339))
 		}
 	}
 
