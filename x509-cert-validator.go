@@ -413,8 +413,10 @@ func main() {
 		if *showGraph {
 			printChainGraph(chain)
 		} else {
-			for depth, cert := range chain {
-				prefix := strings.Repeat("  ", depth)
+			for idx := len(chain) - 1; idx >= 0; idx-- {
+				cert := chain[idx]
+				displayIdx := len(chain) - 1 - idx
+				prefix := strings.Repeat("  ", displayIdx)
 
 				subCN := cert.Subject.CommonName
 				if subCN == "" {
@@ -430,7 +432,7 @@ func main() {
 					self = " (self-signed)"
 				}
 
-				logNormal("%s[%d] Subject: %s%s\n", prefix, depth, subCN, self)
+				logNormal("%s[%d] Subject: %s%s\n", prefix, displayIdx, subCN, self)
 				logNormal("%s    Issuer:  %s\n", prefix, issCN)
 				if showAllFP {
 					logNormal("%s    FP(md5):    %x\n", prefix, md5.Sum(cert.Raw))
@@ -449,8 +451,8 @@ func main() {
 				printNameConstraints(prefix, cert)
 
 				// If issuer is in-chain, show issuer key type/length used to verify this cert's signature.
-				if depth+1 < len(chain) {
-					issuer := chain[depth+1]
+				if idx+1 < len(chain) {
+					issuer := chain[idx+1]
 					logNormal("%s    SignedByKey: %s\n", prefix, certPublicKeySummary(issuer))
 				} else if isSelfSigned(cert) {
 					logNormal("%s    SignedByKey: %s\n", prefix, certPublicKeySummary(cert))
