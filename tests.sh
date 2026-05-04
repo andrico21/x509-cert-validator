@@ -2,7 +2,7 @@
 # x509-cert-validator test suite runner
 #
 # Usage:
-#   ./test.sh -validator /path/to/x509-cert-validator
+#   ./tests.sh -validator /path/to/x509-cert-validator
 #
 # Env:
 #   DEBUG=1                     # bash -x

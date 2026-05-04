@@ -138,16 +138,21 @@ Validity:    2026-02-10 08:12:27 +0000 UTC to 2026-05-11 09:01:37 +0000 UTC
 SAN (DNS):   [go.dev]
 AIA (Issuer): [http://i.pki.goog/wr3.crt]
 CRL DPs:     [http://c.pki.goog/wr3/PBTgX3IAo5A.crl]
+Public Key:  ECDSA-P-256(256)
+Sig Alg:     SHA256-RSA
 
 === Heuristic Analysis ===
+ℹ️  Leaf Public Key: ECDSA-P-256(256)
+ℹ️  Leaf Signature Algorithm: SHA256-RSA
 
 === Automatic AIA Fetching ===
 ⬇️  Fetching Parent via AIA [1/1]: http://i.pki.goog/wr3.crt
-✅ Added fetched certificate: CN=WR3,O=Google Trust Services,C=US
+✅ Added fetched certificate: CN=WR3,O=Google Trust Services,C=US (Key=RSA-2048)
 ⬇️  Fetching Parent via AIA [1/1]: http://i.pki.goog/r1.crt
-ℹ️  Fetched cert is Root CA (GTS Root R1). Stopping fetch.
+ℹ️  Fetched cert is Self-Signed Root (GTS Root R1, Key=RSA-4096). Stopping fetch.
 
 === Verifying Chain ===
+Root Trust: System Trust Store
 ✅ VALIDATION SUCCEEDED
 
 --- Verified Chain Path 1 ---
@@ -178,9 +183,11 @@ CRL DPs:     [http://c.pki.goog/wr3/PBTgX3IAo5A.crl]
 
 === Checking CRLs ===
 ⬇️  Fetching CRL for 'go.dev' [1/1]: http://c.pki.goog/wr3/PBTgX3IAo5A.crl
-   ✅ Valid CRL found via http://c.pki.goog/wr3/PBTgX3IAo5A.crl
+   ℹ️  CRL Signature Verified: SigAlg=SHA256-RSA SignedByKey=RSA-2048 Issuer=WR3
+   ✅ Valid CRL checked via http://c.pki.goog/wr3/PBTgX3IAo5A.crl
 ⬇️  Fetching CRL for 'WR3' [1/1]: http://c.pki.goog/r/r1.crl
-   ✅ Valid CRL found via http://c.pki.goog/r/r1.crl
+   ℹ️  CRL Signature Verified: SigAlg=SHA256-RSA SignedByKey=RSA-4096 Issuer=GTS Root R1
+   ✅ Valid CRL checked via http://c.pki.goog/r/r1.crl
 ✅ CRL CHECK PASSED
 ```
 
@@ -217,9 +224,12 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 ℹ️  Leaf Signature Algorithm: SHA256-RSA
 
 === Automatic AIA Fetching ===
-ℹ️  Valid parent found locally. Stopping fetch.
+ℹ️  Found parent locally: WR2. Continuing walk.
+ℹ️  Found parent locally: GTS Root R1. Continuing walk.
+ℹ️  Reached Self-Signed Root (GTS Root R1). Stopping fetch.
 
 === Verifying Chain ===
+Root Trust: System Trust Store
   (Tip: Hostname mismatch; use -dns or -sni appropriately)
 ❌ ERROR: VALIDATION FAILED: x509: certificate is valid for 137 names, but none matched google.ru
 ```
@@ -256,9 +266,12 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 ℹ️  Leaf Signature Algorithm: SHA256-RSA
 
 === Automatic AIA Fetching ===
-ℹ️  Valid parent found locally. Stopping fetch.
+ℹ️  Found parent locally: WR2. Continuing walk.
+ℹ️  Found parent locally: GTS Root R1. Continuing walk.
+ℹ️  Reached Self-Signed Root (GTS Root R1). Stopping fetch.
 
 === Verifying Chain ===
+Root Trust: System Trust Store
 ✅ VALIDATION SUCCEEDED
 
 --- Verified Chain Path 1 ---
@@ -354,12 +367,12 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 
 ## Automatic retrieval of CA certificates
 ```shell
-cert-validate.exe -root C:\Temp\root.crt -cert C:\Temp\some-cert.crt -aia
+x509-cert-validator.exe -root C:\Temp\root.crt -cert C:\Temp\some-cert.crt -aia
 ```
 
 ### Automatic generation of CA bundle
 
 If root is reachable via AIA - it will be added to bundle with the following command:
 ```shell
-cert-validate.exe -cert C:\Temp\cert.crt -aia -createCAbundle .\cabundle.crt -includeRoot
+x509-cert-validator.exe -cert C:\Temp\cert.crt -aia -createCAbundle .\cabundle.crt -includeRoot
 ```
