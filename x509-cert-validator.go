@@ -10,7 +10,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -24,6 +23,7 @@ import (
 	"time"
 
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
+	"github.com/andrico21/x509-cert-validator/internal/certload"
 	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/errs"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
@@ -981,16 +981,11 @@ func fetchAIA(ctx context.Context, cert *x509.Certificate) (*x509.Certificate, e
 	return nil, fmt.Errorf("all AIA URLs failed. Last error: %v", lastErr)
 }
 
+// readWithLimit is a thin wrapper around certload.ReadWithLimit kept
+// for call-site brevity until certload is consumed directly by an
+// extracted aia/crl subpackage in later PR5b steps.
 func readWithLimit(r io.Reader, limit int64) ([]byte, error) {
-	// Read up to limit+1 so we can reliably detect truncation.
-	data, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("response exceeded size limit (%d bytes); increase the corresponding -max* flag if needed", limit)
-	}
-	return data, nil
+	return certload.ReadWithLimit(r, limit)
 }
 
 func logNormal(format string, args ...any) {
@@ -1200,87 +1195,48 @@ func loadLocalFile(path string) []*x509.Certificate {
 	return parseCertsFromData(data, path)
 }
 
+// parseCertsFromData adapts certload.ParseCerts to the legacy
+// exitErr/global-flag contract still used by main: it ORs the
+// algorithm-rejection flags into the package globals, surfaces skipped
+// PEM-block warnings via logNormal, and aborts via exitErr when no
+// certificates were parsed. Helper certs returned by certload also flow
+// through flagUnsupportedIfNeeded to catch unknown OIDs that x509.ParseCertificate
+// accepted but we still want to flag.
 func parseCertsFromData(data []byte, source string) []*x509.Certificate {
-	var certs []*x509.Certificate
-	blockData := data
-	for {
-		var block *pem.Block
-		block, blockData = pem.Decode(blockData)
-		if block == nil {
-			break
-		}
-		if block.Type == "CERTIFICATE" {
-			c, err := x509.ParseCertificate(block.Bytes)
-			if err != nil {
-				if errs.LooksLikeUnsupportedAlgoErr(err) {
-					hasUnsupportedAlgo = true
-				}
-				if errs.LooksLikeInsecureAlgoErr(err) {
-					hasInsecureAlgo = true
-				}
-				logNormal("Skipping unparsable block in %s: %v\n", source, err)
-			} else {
-				flagUnsupportedIfNeeded(c)
-				certs = append(certs, c)
-			}
-		}
+	res, err := certload.ParseCerts(data, source)
+	if res.HasUnsupportedAlgo {
+		hasUnsupportedAlgo = true
 	}
-	if len(certs) == 0 {
-		c, err := x509.ParseCertificate(data)
-		if err == nil {
-			flagUnsupportedIfNeeded(c)
-			return []*x509.Certificate{c}
-		}
-		if errs.LooksLikeUnsupportedAlgoErr(err) {
-			hasUnsupportedAlgo = true
-		}
-		if errs.LooksLikeInsecureAlgoErr(err) {
-			hasInsecureAlgo = true
-		}
-		exitErr(fmt.Errorf("no certificates found in %s", source))
+	if res.HasInsecureAlgo {
+		hasInsecureAlgo = true
 	}
-	return certs
+	for _, msg := range res.SkippedBlocks {
+		logNormal("%s\n", msg)
+	}
+	if err != nil {
+		exitErr(err)
+	}
+	for _, c := range res.Certs {
+		flagUnsupportedIfNeeded(c)
+	}
+	return res.Certs
 }
 
+// parseCertsFromDataSafe adapts certload.ParseCertsSafe to the legacy
+// global-flag contract. Unlike parseCertsFromData it never aborts and
+// never logs; an empty return slice is a normal outcome.
 func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
-	var certs []*x509.Certificate
-	blockData := data
-	for {
-		var block *pem.Block
-		block, blockData = pem.Decode(blockData)
-		if block == nil {
-			break
-		}
-		if block.Type == "CERTIFICATE" {
-			c, err := x509.ParseCertificate(block.Bytes)
-			if err == nil {
-				flagUnsupportedIfNeeded(c)
-				certs = append(certs, c)
-			} else {
-				if errs.LooksLikeUnsupportedAlgoErr(err) {
-					hasUnsupportedAlgo = true
-				}
-				if errs.LooksLikeInsecureAlgoErr(err) {
-					hasInsecureAlgo = true
-				}
-			}
-		}
+	res := certload.ParseCertsSafe(data)
+	if res.HasUnsupportedAlgo {
+		hasUnsupportedAlgo = true
 	}
-	if len(certs) == 0 {
-		c, err := x509.ParseCertificate(data)
-		if err == nil {
-			flagUnsupportedIfNeeded(c)
-			certs = append(certs, c)
-		} else {
-			if errs.LooksLikeUnsupportedAlgoErr(err) {
-				hasUnsupportedAlgo = true
-			}
-			if errs.LooksLikeInsecureAlgoErr(err) {
-				hasInsecureAlgo = true
-			}
-		}
+	if res.HasInsecureAlgo {
+		hasInsecureAlgo = true
 	}
-	return certs
+	for _, c := range res.Certs {
+		flagUnsupportedIfNeeded(c)
+	}
+	return res.Certs
 }
 
 // --- Graph view (updated to show full Name Constraints details) ---
