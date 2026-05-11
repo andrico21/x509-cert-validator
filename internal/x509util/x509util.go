@@ -42,32 +42,6 @@ func SerialHex(cert *x509.Certificate) string {
 	return hex.EncodeToString(b)
 }
 
-// LooksLikeUnsupportedAlgoErr reports whether err looks like Go's x509
-// package rejecting an algorithm/curve we expected to be diagnostic-visible
-// (GOST, unknown OIDs, unsupported EC curves, etc.).
-func LooksLikeUnsupportedAlgoErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "algorithm unimplemented") ||
-		strings.Contains(s, "unknown public key algorithm") ||
-		strings.Contains(s, "unknown signature algorithm") ||
-		strings.Contains(s, "unsupported elliptic curve") ||
-		strings.Contains(s, "unsupported algorithm")
-}
-
-// LooksLikeInsecureAlgoErr reports whether err is Go's "insecure algorithm"
-// rejection (e.g., SHA1-RSA chains under modern x509 verification policy).
-func LooksLikeInsecureAlgoErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	// Go returns errors like:
-	//   x509: cannot verify signature: insecure algorithm SHA1-RSA
-	return strings.Contains(err.Error(), "insecure algorithm")
-}
-
 // ParseRevocationListFromData parses a CRL from PEM (any block whose Type
 // contains "CRL") or falls back to assuming raw DER.
 func ParseRevocationListFromData(data []byte) (*x509.RevocationList, error) {

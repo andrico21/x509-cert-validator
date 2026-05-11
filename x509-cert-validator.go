@@ -25,6 +25,7 @@ import (
 
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/display"
+	"github.com/andrico21/x509-cert-validator/internal/errs"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
@@ -617,10 +618,10 @@ func flagUnsupportedIfNeeded(cert *x509.Certificate) {
 }
 
 func handleVerifyError(err error, certPath, rootPath, usage string) {
-	if x509util.LooksLikeUnsupportedAlgoErr(err) {
+	if errs.LooksLikeUnsupportedAlgoErr(err) {
 		hasUnsupportedAlgo = true
 	}
-	if x509util.LooksLikeInsecureAlgoErr(err) {
+	if errs.LooksLikeInsecureAlgoErr(err) {
 		hasInsecureAlgo = true
 	}
 
@@ -821,10 +822,10 @@ func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) 
 
 					parsed, err := x509util.ParseRevocationListFromData(data)
 					if err != nil {
-						if x509util.LooksLikeUnsupportedAlgoErr(err) {
+						if errs.LooksLikeUnsupportedAlgoErr(err) {
 							hasUnsupportedAlgo = true
 						}
-						if x509util.LooksLikeInsecureAlgoErr(err) {
+						if errs.LooksLikeInsecureAlgoErr(err) {
 							hasInsecureAlgo = true
 						}
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: parse failed", cdpURL))
@@ -846,10 +847,10 @@ func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) 
 
 				// Signature must validate against issuer
 				if err := crl.CheckSignatureFrom(parent); err != nil {
-					if x509util.LooksLikeUnsupportedAlgoErr(err) {
+					if errs.LooksLikeUnsupportedAlgoErr(err) {
 						hasUnsupportedAlgo = true
 					}
-					if x509util.LooksLikeInsecureAlgoErr(err) {
+					if errs.LooksLikeInsecureAlgoErr(err) {
 						hasInsecureAlgo = true
 					}
 					errMsgs = append(errMsgs, fmt.Sprintf("%s: invalid signature", cdpURL))
@@ -1211,10 +1212,10 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
 		if block.Type == "CERTIFICATE" {
 			c, err := x509.ParseCertificate(block.Bytes)
 			if err != nil {
-				if x509util.LooksLikeUnsupportedAlgoErr(err) {
+				if errs.LooksLikeUnsupportedAlgoErr(err) {
 					hasUnsupportedAlgo = true
 				}
-				if x509util.LooksLikeInsecureAlgoErr(err) {
+				if errs.LooksLikeInsecureAlgoErr(err) {
 					hasInsecureAlgo = true
 				}
 				logNormal("Skipping unparsable block in %s: %v\n", source, err)
@@ -1230,10 +1231,10 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
 			flagUnsupportedIfNeeded(c)
 			return []*x509.Certificate{c}
 		}
-		if x509util.LooksLikeUnsupportedAlgoErr(err) {
+		if errs.LooksLikeUnsupportedAlgoErr(err) {
 			hasUnsupportedAlgo = true
 		}
-		if x509util.LooksLikeInsecureAlgoErr(err) {
+		if errs.LooksLikeInsecureAlgoErr(err) {
 			hasInsecureAlgo = true
 		}
 		exitErr(fmt.Errorf("no certificates found in %s", source))
@@ -1256,10 +1257,10 @@ func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
 				flagUnsupportedIfNeeded(c)
 				certs = append(certs, c)
 			} else {
-				if x509util.LooksLikeUnsupportedAlgoErr(err) {
+				if errs.LooksLikeUnsupportedAlgoErr(err) {
 					hasUnsupportedAlgo = true
 				}
-				if x509util.LooksLikeInsecureAlgoErr(err) {
+				if errs.LooksLikeInsecureAlgoErr(err) {
 					hasInsecureAlgo = true
 				}
 			}
@@ -1271,10 +1272,10 @@ func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
 			flagUnsupportedIfNeeded(c)
 			certs = append(certs, c)
 		} else {
-			if x509util.LooksLikeUnsupportedAlgoErr(err) {
+			if errs.LooksLikeUnsupportedAlgoErr(err) {
 				hasUnsupportedAlgo = true
 			}
-			if x509util.LooksLikeInsecureAlgoErr(err) {
+			if errs.LooksLikeInsecureAlgoErr(err) {
 				hasInsecureAlgo = true
 			}
 		}

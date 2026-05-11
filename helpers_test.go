@@ -18,6 +18,7 @@ import (
 
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/display"
+	"github.com/andrico21/x509-cert-validator/internal/errs"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
@@ -136,20 +137,20 @@ func TestLooksLikeUnsupportedAlgoErr(t *testing.T) {
 		{errors.New("unsupported algorithm GOST"), true},
 	}
 	for _, c := range cases {
-		if got := x509util.LooksLikeUnsupportedAlgoErr(c.err); got != c.want {
+		if got := errs.LooksLikeUnsupportedAlgoErr(c.err); got != c.want {
 			t.Errorf("err=%v: want %v, got %v", c.err, c.want, got)
 		}
 	}
 }
 
 func TestLooksLikeInsecureAlgoErr(t *testing.T) {
-	if x509util.LooksLikeInsecureAlgoErr(nil) {
+	if errs.LooksLikeInsecureAlgoErr(nil) {
 		t.Error("nil err should be false")
 	}
-	if x509util.LooksLikeInsecureAlgoErr(errors.New("connection refused")) {
+	if errs.LooksLikeInsecureAlgoErr(errors.New("connection refused")) {
 		t.Error("non-matching err should be false")
 	}
-	if !x509util.LooksLikeInsecureAlgoErr(errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")) {
+	if !errs.LooksLikeInsecureAlgoErr(errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")) {
 		t.Error("matching err should be true")
 	}
 }
