@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5" // #nosec G501 -- MD5 fingerprints are intentionally exposed (-fp-show-all) as a diagnostic identifier, not for cryptographic security.
 	"crypto/sha1" // #nosec G505 -- SHA-1 fingerprints are a standard, intentional diagnostic identifier (parity with openssl x509 -fingerprint -sha1).
@@ -25,6 +24,7 @@ import (
 	"github.com/andrico21/x509-cert-validator/internal/aia"
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/certload"
+	"github.com/andrico21/x509-cert-validator/internal/crl"
 	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/errs"
 	"github.com/andrico21/x509-cert-validator/internal/validator"
@@ -719,15 +719,13 @@ func highlightLeafIssues(cert *x509.Certificate) {
 	}
 }
 
-type crlCacheEntry struct {
-	rl *x509.RevocationList
-}
-
-// CRL policy:
-// - PEM and DER supported.
-// - If multiple CDPs exist: at least one must respond with a VALID CRL.
-// - Missing ThisUpdate/NextUpdate => warning AND treated as invalid for -crl.
-// - If multiple VALID CRLs respond: if ANY indicates revoked => FAIL with clear message.
+// checkCRL adapts crl.Checker to the legacy global-flag contract used
+// by main's CRL-check call site. The Checker is constructed lazily on
+// each call so per-fetch settings (PerFetchTimeout, MaxBytes) always
+// reflect the current global values; this matches the original inline
+// behavior exactly. A future step will hoist construction up to the
+// Validator struct so the *http.Client and Logger are shared across
+// all network callers in a run.
 func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) error {
 	client := &http.Client{
 		Timeout: DefaultHTTPTimeout,
@@ -738,164 +736,21 @@ func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) 
 			return nil
 		},
 	}
-
-	// Cache CRLs by URL (avoids repeated downloads across chains)
-	crlCache := make(map[string]crlCacheEntry)
-
-	// Dedupe per unique (child cert, parent cert) pair across all chain paths
-	checkedPair := make(map[string]bool)
-
-	for _, chain := range chains {
-		for i := 0; i < len(chain)-1; i++ {
-			child := chain[i]
-			parent := chain[i+1]
-
-			// Ensure Parent can Sign CRLs
-			if (parent.KeyUsage & x509.KeyUsageCRLSign) == 0 {
-				logNormal("⚠️  WARNING: Issuer '%s' does not have CRLSign usage. Skipping CRL check for this level.\n", x509util.CnOrDN(parent))
-				continue
-			}
-
-			if len(child.CRLDistributionPoints) == 0 {
-				logNormal("ℹ️  Skipping %s (No CDP defined)\n", x509util.CnOrDN(child))
-				continue
-			}
-
-			// Pair dedupe (prevents duplicate checks across multiple verified chain paths)
-			// Use full SHA-256 to avoid collision risk on truncated keys.
-			childFP := sha256.Sum256(child.Raw)
-			parentFP := sha256.Sum256(parent.Raw)
-			pairKey := hex.EncodeToString(childFP[:]) + ":" + hex.EncodeToString(parentFP[:])
-
-			if checkedPair[pairKey] {
-				logNormal("ℹ️  Skipping CRL re-check (already checked) for '%s' issued by '%s'\n", x509util.CnOrDN(child), x509util.CnOrDN(parent))
-				continue
-			}
-			checkedPair[pairKey] = true
-
-			validCRLFound := false
-			var errMsgs []string
-
-			for idx, cdpURL := range child.CRLDistributionPoints {
-				if !strings.HasPrefix(cdpURL, "http://") && !strings.HasPrefix(cdpURL, "https://") {
-					// M-2: surface skipped non-http(s) CRL URLs.
-					logNormal("⚠️  Skipping CRL URL with unsupported scheme [%d/%d] for '%s': %s\n", idx+1, len(child.CRLDistributionPoints), x509util.CnOrDN(child), cdpURL)
-					continue
-				}
-
-				var crl *x509.RevocationList
-				if cached, ok := crlCache[cdpURL]; ok && cached.rl != nil {
-					crl = cached.rl
-					logNormal("ℹ️  Using cached CRL for '%s' [%d/%d]: %s\n", x509util.CnOrDN(child), idx+1, len(child.CRLDistributionPoints), cdpURL)
-				} else {
-					logNormal("⬇️  Fetching CRL for '%s' [%d/%d]: %s\n", x509util.CnOrDN(child), idx+1, len(child.CRLDistributionPoints), cdpURL)
-
-					// Per-fetch cap layered under the global ctx.
-					fetchCtx, cancel := context.WithTimeout(ctx, DefaultHTTPTimeout)
-					req, err := http.NewRequestWithContext(fetchCtx, "GET", cdpURL, nil)
-					if err != nil {
-						cancel()
-						errMsgs = append(errMsgs, fmt.Sprintf("%s: bad request: %v", cdpURL, err))
-						continue
-					}
-					req.Header.Set("User-Agent", "x509-cert-validator/1.0")
-
-					resp, err := client.Do(req)
-					if err != nil {
-						cancel()
-						errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", cdpURL, err))
-						continue
-					}
-
-					if resp.StatusCode != 200 {
-						_ = resp.Body.Close()
-						cancel()
-						errMsgs = append(errMsgs, fmt.Sprintf("%s: HTTP %d", cdpURL, resp.StatusCode))
-						continue
-					}
-
-					data, err := readWithLimit(resp.Body, maxCRLDownloadBytes)
-					_ = resp.Body.Close()
-					cancel()
-					if err != nil {
-						errMsgs = append(errMsgs, fmt.Sprintf("%s: read failed (%v)", cdpURL, err))
-						continue
-					}
-
-					parsed, err := x509util.ParseRevocationListFromData(data)
-					if err != nil {
-						if errs.LooksLikeUnsupportedAlgoErr(err) {
-							hasUnsupportedAlgo = true
-						}
-						if errs.LooksLikeInsecureAlgoErr(err) {
-							hasInsecureAlgo = true
-						}
-						errMsgs = append(errMsgs, fmt.Sprintf("%s: parse failed", cdpURL))
-						continue
-					}
-					crl = parsed
-					crlCache[cdpURL] = crlCacheEntry{rl: parsed}
-				}
-
-				// H-2: verify CRL Issuer DN matches parent CA Subject DN before signature check.
-				// Catches the rare same-key-different-CA edge case earlier with a clearer error
-				// (the subsequent sig check would also reject, but with a less informative message).
-				if !bytes.Equal(crl.RawIssuer, parent.RawSubject) {
-					logNormal("⚠️  CRL Issuer DN does not match parent CA Subject DN (CRL Issuer=%q vs Parent=%q). Treating CRL as invalid.\n",
-						crl.Issuer.String(), parent.Subject.String())
-					errMsgs = append(errMsgs, fmt.Sprintf("%s: CRL Issuer DN does not match parent CA Subject DN", cdpURL))
-					continue
-				}
-
-				// Signature must validate against issuer
-				if err := crl.CheckSignatureFrom(parent); err != nil {
-					if errs.LooksLikeUnsupportedAlgoErr(err) {
-						hasUnsupportedAlgo = true
-					}
-					if errs.LooksLikeInsecureAlgoErr(err) {
-						hasInsecureAlgo = true
-					}
-					errMsgs = append(errMsgs, fmt.Sprintf("%s: invalid signature", cdpURL))
-					continue
-				}
-
-				// Log key type/length used for CRL signature verification (requested).
-				logNormal("   ℹ️  CRL Signature Verified: SigAlg=%s SignedByKey=%s Issuer=%s\n",
-					crl.SignatureAlgorithm, x509util.CertPublicKeySummary(parent), x509util.CnOrDN(parent))
-
-				// Missing ThisUpdate/NextUpdate => warning + treat as invalid for -crl
-				if crl.ThisUpdate.IsZero() || crl.NextUpdate.IsZero() {
-					logNormal("⚠️  WARNING: CRL from %s missing ThisUpdate/NextUpdate; treating as invalid for -crl.\n", cdpURL)
-					errMsgs = append(errMsgs, fmt.Sprintf("%s: missing ThisUpdate/NextUpdate", cdpURL))
-					continue
-				}
-
-				if now.Before(crl.ThisUpdate) || now.After(crl.NextUpdate) {
-					errMsgs = append(errMsgs, fmt.Sprintf("%s: CRL expired or future", cdpURL))
-					continue
-				}
-
-				// This is a valid responding CRL
-				validCRLFound = true
-
-				// If any responding CRL reports revoked => fail (clear statement)
-				for _, revoked := range crl.RevokedCertificateEntries {
-					if child.SerialNumber.Cmp(revoked.SerialNumber) == 0 {
-						return fmt.Errorf("certificate '%s' (Serial=%s) is REVOKED according to CRL %s",
-							x509util.CnOrDN(child), x509util.SerialHex(child), cdpURL)
-					}
-				}
-
-				logNormal("   ✅ Valid CRL checked via %s\n", cdpURL)
-				// Do NOT break: another responding CDP might still report revoked.
-			}
-
-			if !validCRLFound {
-				return fmt.Errorf("failed to check CRL for %s. Errors: %v", x509util.CnOrDN(child), errMsgs)
-			}
-		}
+	logger := validator.NewStderrLogger(validator.Verbosity(verbosity))
+	c := &crl.Checker{
+		Client:          client,
+		Logger:          logger,
+		MaxBytes:        maxCRLDownloadBytes,
+		PerFetchTimeout: DefaultHTTPTimeout,
 	}
-	return nil
+	res, err := c.Check(ctx, chains, now)
+	if res.HasUnsupportedAlgo {
+		hasUnsupportedAlgo = true
+	}
+	if res.HasInsecureAlgo {
+		hasInsecureAlgo = true
+	}
+	return err
 }
 
 // fetchAIA adapts aia.Fetcher to the legacy global-flag contract used
