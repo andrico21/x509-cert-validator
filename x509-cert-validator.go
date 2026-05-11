@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/dsa" // intentionally retained for diagnostic-only DSA key-type reporting on legacy certs; SA1019 suppressed via staticcheck.conf; deferred to PR5 refactor.
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -45,6 +46,12 @@ const (
 
 	DefaultHTTPTimeout     = 10 * time.Second
 	DefaultTLSProbeTimeout = 5 * time.Second
+
+	// DefaultGlobalTimeout caps the overall wall-clock budget for all network
+	// operations performed during a single validation run (AIA chain walk +
+	// per-level CRL fetches + remote cert load). Per-fetch caps still apply
+	// via DefaultHTTPTimeout / DefaultTLSProbeTimeout; this is the umbrella.
+	DefaultGlobalTimeout = 60 * time.Second
 )
 
 // version is set at build time via -ldflags "-X main.version=1.0"
@@ -278,6 +285,13 @@ func main() {
 
 	logNormal("Runtime: %s\n", runtime.Version())
 
+	// --- 0. Root context with global wall-clock cap for all network operations.
+	// Per-fetch caps (DefaultHTTPTimeout / DefaultTLSProbeTimeout) still apply
+	// inside individual helpers; this umbrella prevents pathological worst-case
+	// latency from a deep AIA walk + many CRL fetches stacking up.
+	ctx, cancelCtx := context.WithTimeout(context.Background(), DefaultGlobalTimeout)
+	defer cancelCtx()
+
 	// --- 1. Setup Validation Time ---
 	currentTime := time.Now()
 	if *atTime != "" {
@@ -311,7 +325,7 @@ func main() {
 		rootSourceLabel = "Explicit User Root"
 		logNormal("--- Loading Roots (File/URL) ---\n")
 		roots = x509.NewCertPool()
-		for _, cert := range loadAll(*rootPath) {
+		for _, cert := range loadAll(ctx, *rootPath) {
 			printShortID("Root", cert)
 			if !cert.IsCA {
 				logNormal("  ⚠️ WARNING: Root input cert is NOT marked as CA\n")
@@ -344,7 +358,7 @@ func main() {
 			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(path)), "file://") {
 				exitErr(fmt.Errorf("unsupported intermediate scheme: file:// is not accepted (%s)", path))
 			}
-			for _, cert := range loadAll(path) {
+			for _, cert := range loadAll(ctx, path) {
 				printShortID("Inter", cert)
 				if !cert.IsCA {
 					logNormal("  ⚠️ WARNING: Intermediate is NOT marked as CA\n")
@@ -364,7 +378,7 @@ func main() {
 		logNormal("\n⚠️  Hostname verification SKIPPED (no -dns/-sni provided for HTTPS probe). Chain validity only.\n")
 	}
 
-	targetCerts := loadAll(*certPath)
+	targetCerts := loadAll(ctx, *certPath)
 	if len(targetCerts) == 0 {
 		exitErr(fmt.Errorf("no certificates loaded from -cert"))
 	}
@@ -423,7 +437,7 @@ func main() {
 				break
 			}
 
-			parentCert, err := fetchAIA(currentCert)
+			parentCert, err := fetchAIA(ctx, currentCert)
 			if err != nil {
 				logNormal("⚠️  AIA Fetch failed for %s: %v\n", cnOrDN(currentCert), err)
 				break
@@ -579,7 +593,7 @@ func main() {
 	// --- 10. CRL Check (Strict) ---
 	if *enableCRL {
 		logNormal("\n=== Checking CRLs ===\n")
-		if err := checkCRL(chains, currentTime); err != nil {
+		if err := checkCRL(ctx, chains, currentTime); err != nil {
 			exitErr(fmt.Errorf("CRL CHECK FAILED: %v", err))
 		}
 		logNormal("✅ CRL CHECK PASSED\n")
@@ -942,7 +956,7 @@ type crlCacheEntry struct {
 // - If multiple CDPs exist: at least one must respond with a VALID CRL.
 // - Missing ThisUpdate/NextUpdate => warning AND treated as invalid for -crl.
 // - If multiple VALID CRLs respond: if ANY indicates revoked => FAIL with clear message.
-func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
+func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) error {
 	client := &http.Client{
 		Timeout: DefaultHTTPTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -1004,8 +1018,11 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 				} else {
 					logNormal("⬇️  Fetching CRL for '%s' [%d/%d]: %s\n", cnOrDN(child), idx+1, len(child.CRLDistributionPoints), cdpURL)
 
-					req, err := http.NewRequest("GET", cdpURL, nil)
+					// Per-fetch cap layered under the global ctx.
+					fetchCtx, cancel := context.WithTimeout(ctx, DefaultHTTPTimeout)
+					req, err := http.NewRequestWithContext(fetchCtx, "GET", cdpURL, nil)
 					if err != nil {
+						cancel()
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: bad request: %v", cdpURL, err))
 						continue
 					}
@@ -1013,18 +1030,21 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 
 					resp, err := client.Do(req)
 					if err != nil {
+						cancel()
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", cdpURL, err))
 						continue
 					}
 
 					if resp.StatusCode != 200 {
 						_ = resp.Body.Close()
+						cancel()
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: HTTP %d", cdpURL, resp.StatusCode))
 						continue
 					}
 
 					data, err := readWithLimit(resp.Body, maxCRLDownloadBytes)
 					_ = resp.Body.Close()
+					cancel()
 					if err != nil {
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: read failed (%v)", cdpURL, err))
 						continue
@@ -1106,7 +1126,7 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 	return nil
 }
 
-func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
+func fetchAIA(ctx context.Context, cert *x509.Certificate) (*x509.Certificate, error) {
 	client := &http.Client{
 		Timeout: DefaultHTTPTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -1126,8 +1146,11 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 		}
 		logNormal("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
 
-		req, err := http.NewRequest("GET", u, nil)
+		// Per-fetch cap layered under the global ctx.
+		fetchCtx, cancel := context.WithTimeout(ctx, DefaultHTTPTimeout)
+		req, err := http.NewRequestWithContext(fetchCtx, "GET", u, nil)
 		if err != nil {
+			cancel()
 			logNormal("   ⚠️  Bad Request: %v\n", err)
 			lastErr = err
 			continue
@@ -1136,6 +1159,7 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 
 		resp, err := client.Do(req)
 		if err != nil {
+			cancel()
 			logNormal("   ⚠️  Connection Failed: %v\n", err)
 			lastErr = err
 			continue
@@ -1143,6 +1167,7 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 
 		if resp.StatusCode != 200 {
 			_ = resp.Body.Close()
+			cancel()
 			logNormal("   ⚠️  HTTP Error: %d\n", resp.StatusCode)
 			lastErr = fmt.Errorf("status %d", resp.StatusCode)
 			continue
@@ -1150,6 +1175,7 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 
 		data, err := readWithLimit(resp.Body, maxAIADownloadBytes)
 		_ = resp.Body.Close()
+		cancel()
 		if err != nil {
 			logNormal("   ⚠️  Read Failed: %v\n", err)
 			lastErr = err
@@ -1285,22 +1311,22 @@ func printCertDetails(label string, cert *x509.Certificate) {
 	printNameConstraints("", cert)
 }
 
-func loadAll(input string) []*x509.Certificate {
+func loadAll(ctx context.Context, input string) []*x509.Certificate {
 	s := strings.ToLower(strings.TrimSpace(input))
 	if strings.HasPrefix(s, "file://") {
 		exitErr(fmt.Errorf("unsupported path scheme: file:// is not accepted (%s)", input))
 	}
 
 	if strings.HasPrefix(s, "https://") {
-		return fetchRemoteCert(input)
+		return fetchRemoteCert(ctx, input)
 	}
 	if strings.HasPrefix(s, "http://") {
-		return downloadCertFile(input)
+		return downloadCertFile(ctx, input)
 	}
 	return loadLocalFile(input)
 }
 
-func fetchRemoteCert(urlStr string) []*x509.Certificate {
+func fetchRemoteCert(ctx context.Context, urlStr string) []*x509.Certificate {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		exitErr(fmt.Errorf("invalid url: %v", err))
@@ -1318,11 +1344,16 @@ func fetchRemoteCert(urlStr string) []*x509.Certificate {
 		logNormal("ℹ️  Using SNI override: %s\n", sniOverride)
 	}
 
-	dialer := &net.Dialer{Timeout: DefaultTLSProbeTimeout}
-	conn, err := tls.DialWithDialer(dialer, "tcp", host, cfg)
+	// Per-fetch cap layered under the global ctx; whichever fires first wins.
+	dialCtx, cancel := context.WithTimeout(ctx, DefaultTLSProbeTimeout)
+	defer cancel()
+
+	tlsDialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: cfg}
+	rawConn, err := tlsDialer.DialContext(dialCtx, "tcp", host)
 	if err != nil {
 		exitErr(fmt.Errorf("failed to connect to %s: %v", host, err))
 	}
+	conn := rawConn.(*tls.Conn)
 	defer conn.Close()
 
 	state := conn.ConnectionState()
@@ -1336,7 +1367,7 @@ func fetchRemoteCert(urlStr string) []*x509.Certificate {
 	return state.PeerCertificates
 }
 
-func downloadCertFile(urlStr string) []*x509.Certificate {
+func downloadCertFile(ctx context.Context, urlStr string) []*x509.Certificate {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		exitErr(fmt.Errorf("invalid url: %v", err))
@@ -1356,7 +1387,11 @@ func downloadCertFile(urlStr string) []*x509.Certificate {
 		},
 	}
 
-	req, err := http.NewRequest("GET", urlStr, nil)
+	// Per-fetch cap layered under the global ctx.
+	fetchCtx, cancel := context.WithTimeout(ctx, DefaultHTTPTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, "GET", urlStr, nil)
 	if err != nil {
 		exitErr(fmt.Errorf("request creation failed: %v", err))
 	}
