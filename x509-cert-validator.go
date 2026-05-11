@@ -2,12 +2,12 @@ package main
 
 import (
 	"bytes"
-	"crypto/dsa"
+	"crypto/dsa" // intentionally retained for diagnostic-only DSA key-type reporting on legacy certs; SA1019 suppressed via staticcheck.conf; deferred to PR5 refactor.
 	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- MD5 fingerprints are intentionally exposed (-fp-show-all) as a diagnostic identifier, not for cryptographic security.
 	"crypto/rsa"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- SHA-1 fingerprints are a standard, intentional diagnostic identifier (parity with openssl x509 -fingerprint -sha1).
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
@@ -340,7 +340,8 @@ func main() {
 
 				// Do NOT automatically trust it for verification. Only keep for optional bundling output.
 				rootCerts = append(rootCerts, parentCert)
-				poolList = append(poolList, parentCert)
+				// Note: not appending to poolList here; we break out of the AIA walk
+				// immediately and poolList is not read again in this branch.
 
 				break
 			}
@@ -447,9 +448,9 @@ func main() {
 				logNormal("%s[%d] Subject: %s%s\n", prefix, displayIdx, subCN, self)
 				logNormal("%s    Issuer:  %s\n", prefix, issCN)
 				if showAllFP {
-					logNormal("%s    FP(md5):    %x\n", prefix, md5.Sum(cert.Raw))
+					logNormal("%s    FP(md5):    %x\n", prefix, md5.Sum(cert.Raw)) // #nosec G401 -- diagnostic fingerprint, not used for cryptographic verification.
 				}
-				logNormal("%s    FP(sha1):   %x\n", prefix, sha1.Sum(cert.Raw))
+				logNormal("%s    FP(sha1):   %x\n", prefix, sha1.Sum(cert.Raw)) // #nosec G401 -- diagnostic fingerprint (parity with openssl/certutil), not used for cryptographic verification.
 				logNormal("%s    FP(sha256): %x\n", prefix, sha256.Sum256(cert.Raw))
 				if showAllFP {
 					logNormal("%s    FP(sha384): %x\n", prefix, sha512.Sum384(cert.Raw))
@@ -547,6 +548,7 @@ func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsW
 	tmpPath := path + ".tmp"
 	// M-4: explicit perms (0644) and named-return + deferred cleanup so we never
 	// leave a stale .tmp file behind on partial failure.
+	// #nosec G302 G304 -- bundle is a public PEM artifact (CA certificates); 0o644 is the intentional, documented file mode for distribution. Path is user-supplied by design (-createCAbundle <path>).
 	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return 0, 0, err
@@ -1152,9 +1154,9 @@ func printCertDetails(label string, cert *x509.Certificate) {
 	logNormal("Subject:     %s\n", cert.Subject)
 	logNormal("Issuer:      %s\n", cert.Issuer)
 	if showAllFP {
-		logNormal("FP(md5):     %x\n", md5.Sum(cert.Raw))
+		logNormal("FP(md5):     %x\n", md5.Sum(cert.Raw)) // #nosec G401 -- diagnostic fingerprint, not used for cryptographic verification.
 	}
-	logNormal("FP(sha1):    %x\n", sha1.Sum(cert.Raw))
+	logNormal("FP(sha1):    %x\n", sha1.Sum(cert.Raw)) // #nosec G401 -- diagnostic fingerprint (parity with openssl/certutil), not used for cryptographic verification.
 	logNormal("FP(sha256):  %x\n", sha256.Sum256(cert.Raw))
 	if showAllFP {
 		logNormal("FP(sha384):  %x\n", sha512.Sum384(cert.Raw))
@@ -1207,7 +1209,8 @@ func fetchRemoteCert(urlStr string) []*x509.Certificate {
 	}
 	logNormal("⬇️  Connecting to remote server: %s ...\n", host)
 
-	cfg := &tls.Config{InsecureSkipVerify: true} // we validate ourselves via x509.Verify
+	// #nosec G402 -- this tool is a TLS *diagnostic*; we deliberately disable Go's built-in chain verification so we can collect and analyze the server-presented chain ourselves via x509.Verify (with caller-controlled roots/intermediates and -dns/-sni hostname checks). Documented behavior, not an oversight.
+	cfg := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12} // we validate ourselves via x509.Verify
 	if sniOverride != "" {
 		cfg.ServerName = sniOverride
 		logNormal("ℹ️  Using SNI override: %s\n", sniOverride)
@@ -1275,6 +1278,7 @@ func downloadCertFile(urlStr string) []*x509.Certificate {
 }
 
 func loadLocalFile(path string) []*x509.Certificate {
+	// #nosec G304 -- this tool's purpose is to read user-specified certificate files (-cert, -root); the path being a variable is by design.
 	f, err := os.Open(path)
 	if err != nil {
 		exitErr(fmt.Errorf("read error (%s): %v", path, err))

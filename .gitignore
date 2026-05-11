@@ -29,7 +29,14 @@ go.work.sum
 
 # Editor/IDE
 # .idea/
-# .vscode/
+.vscode/
+
+# Local agent / planning workspace (not part of project)
+.sisyphus/
+
+# Built validator binary (Linux/macOS, no extension)
+/x509-cert-validator
+/x509-cert-validator-*
 
 # certificates
 *.pem
