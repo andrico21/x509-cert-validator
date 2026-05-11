@@ -1,0 +1,23 @@
+# Default: let git auto-detect text files; normalize line endings to LF on commit.
+* text=auto eol=lf
+
+# Enforce LF for shell, Go, YAML, Markdown — these are run/parsed on Linux CI.
+*.sh    text eol=lf
+*.go    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.cnf   text eol=lf
+
+# Treat known binary types as binary (no normalization, no diff).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pem   binary
+*.crt   binary
+*.der   binary
+*.key   binary
+*.crl   binary
+*.exe   binary

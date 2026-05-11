@@ -1,19 +1,21 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+# Build / vet / lint / vulncheck / integration tests.
+# CI is enforced strict: any lint or test failure fails the workflow.
 
 name: Go
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  lint:
+    name: Lint (gofmt, vet, staticcheck, gosec)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -21,10 +23,45 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26.3'
+          go-version: "1.26.3"
+          cache: true
 
-      - name: Vet
+      - name: gofmt -d (strict)
+        run: |
+          set -euo pipefail
+          out="$(gofmt -d .)"
+          if [ -n "$out" ]; then
+            echo "::error::gofmt found formatting issues:"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+
+      - name: go vet
         run: go vet ./...
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: gosec
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.22.5
+          "$(go env GOPATH)/bin/gosec" -quiet ./...
+
+  build:
+    name: Build / Vulncheck / Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.3"
+          cache: true
 
       - name: govulncheck
         run: |
@@ -36,3 +73,31 @@ jobs:
 
       - name: Test
         run: go test -v ./...
+
+  integration:
+    name: Integration tests (tests.sh)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.3"
+          cache: true
+
+      - name: Verify required tools (openssl, python3, timeout)
+        run: |
+          set -euo pipefail
+          for c in openssl python3 timeout bash; do
+            command -v "$c" >/dev/null || { echo "missing: $c"; exit 1; }
+          done
+          openssl version
+          python3 --version
+
+      - name: Build validator
+        run: go build -o ./x509-cert-validator .
+
+      - name: Run integration suite (tests.sh)
+        run: bash ./tests.sh -validator "$PWD/x509-cert-validator"
