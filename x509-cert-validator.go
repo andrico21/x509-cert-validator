@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,13 +64,91 @@ var (
 	maxLocalFileBytes     int64 = DefaultMaxLocalFileBytes
 	maxRemoteCertFileSize int64 = DefaultMaxRemoteCertFileSize
 	showAllFP             bool
+
+	// hiddenAliasFlags lists flag names that are accepted on the CLI for backward
+	// compatibility with older script callers (incl. tests.sh) but should NOT
+	// appear in -h help output. Populated by aliasFlags() during flag setup.
+	hiddenAliasFlags = map[string]struct{}{}
 )
+
+// aliasFlags registers each (alias -> canonical) pair as an additional CLI flag
+// that writes through to the SAME underlying value as its canonical flag. The
+// alias is recorded in hiddenAliasFlags so printDefaultsExcludingAliases() can
+// suppress it from -h output.
+//
+// Behavior is type-preserving: bool/string/int64 aliases delegate through to the
+// canonical flag's flag.Value, which routes parsed input to the original
+// pointer (e.g. flag.Bool returns *bool, flag.String returns *string).
+//
+// Panics on misuse (unknown canonical name, alias collision) so configuration
+// bugs surface at startup, not at parse time.
+func aliasFlags(aliases map[string]string) {
+	for alias, canonical := range aliases {
+		canonFlag := flag.Lookup(canonical)
+		if canonFlag == nil {
+			panic(fmt.Sprintf("aliasFlags: unknown canonical flag %q (alias %q)", canonical, alias))
+		}
+		if existing := flag.Lookup(alias); existing != nil {
+			panic(fmt.Sprintf("aliasFlags: alias %q already registered as a flag", alias))
+		}
+		// Bind alias to the SAME flag.Value -- both names update the same memory.
+		// Usage string intentionally points users at the canonical name.
+		flag.Var(canonFlag.Value, alias, fmt.Sprintf("alias for -%s (deprecated; kept for backward compatibility)", canonical))
+		hiddenAliasFlags[alias] = struct{}{}
+	}
+}
+
+// printDefaultsExcludingAliases mirrors flag.PrintDefaults but skips entries
+// recorded in hiddenAliasFlags so legacy aliases do not clutter -h output.
+func printDefaultsExcludingAliases(w io.Writer) {
+	flag.VisitAll(func(f *flag.Flag) {
+		if _, hidden := hiddenAliasFlags[f.Name]; hidden {
+			return
+		}
+		// Format mirrors stdlib flag.PrintDefaults (single-letter flags get one
+		// dash, longer ones get one dash too -- Go's flag package uses single-dash
+		// for everything; we keep parity).
+		s := fmt.Sprintf("  -%s", f.Name)
+		name, usageStr := flag.UnquoteUsage(f)
+		if name != "" {
+			s += " " + name
+		}
+		// Two-space indent for the help text on the next line, matching stdlib.
+		s += "\n    \t"
+		s += strings.ReplaceAll(usageStr, "\n", "\n    \t")
+		if !isZeroValueFlag(f, f.DefValue) {
+			// Match stdlib formatting: numerics & bools bare, strings quoted.
+			// Heuristic: if DefValue parses as int or float, treat as numeric.
+			if _, err := strconv.ParseInt(f.DefValue, 10, 64); err == nil {
+				s += fmt.Sprintf(" (default %s)", f.DefValue)
+			} else if _, err := strconv.ParseFloat(f.DefValue, 64); err == nil {
+				s += fmt.Sprintf(" (default %s)", f.DefValue)
+			} else if f.DefValue == "true" || f.DefValue == "false" {
+				s += fmt.Sprintf(" (default %s)", f.DefValue)
+			} else {
+				s += fmt.Sprintf(" (default %q)", f.DefValue)
+			}
+		}
+		fmt.Fprintln(w, s)
+	})
+}
+
+// isZeroValueFlag reports whether the given default string represents the
+// zero value for the flag's underlying type. Mirrors stdlib flag.isZeroValue
+// well enough for our use (we only call it from help output).
+func isZeroValueFlag(f *flag.Flag, value string) bool {
+	switch value {
+	case "", "false", "0":
+		return true
+	}
+	return false
+}
 
 func main() {
 	// --- Usage ---
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-		flag.PrintDefaults()
+		printDefaultsExcludingAliases(os.Stderr)
 		fmt.Fprintln(os.Stderr, "\nEXAMPLES:")
 		fmt.Fprintln(os.Stderr, "  1. Live HTTPS Probe (Check server's current chain):")
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert https://github.com")
@@ -83,27 +162,36 @@ func main() {
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -crl")
 
 		fmt.Fprintln(os.Stderr, "\n  4. Fix Local Chain & Export Bundle:")
-		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle full-chain.crt")
-		fmt.Fprintln(os.Stderr, "     Exporting Root CA (-includeRoot) requires explicit specification of root CA's certificate file (-root <filename>).")
-		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot -root custom-root-ca.crt")
+		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle full-chain.crt")
+		fmt.Fprintln(os.Stderr, "     Exporting Root CA (-include-root) requires explicit specification of root CA's certificate file (-root <filename>).")
+		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle bundle.crt -include-root -root custom-root-ca.crt")
 		fmt.Fprintln(os.Stderr, "     (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)")
 		fmt.Fprintln(os.Stderr, "     (    Never install an unknown Root CA unless you know what you are doing)")
 		fmt.Fprintln(os.Stderr, "     (    and have verified its fingerprint manually.)")
 		fmt.Fprintln(os.Stderr, "     (    Trusting a malicious Root might lead to interception of your private data.)")
 
 		fmt.Fprintln(os.Stderr, "\n  5. Visualization:")
-		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -showGraph")
+		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -show-graph")
 
 		fmt.Fprintln(os.Stderr, "\n  6. Silent Mode (Short status line only):")
 		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -silent")
 		fmt.Fprintln(os.Stderr, "     > PASS [github.com] Serial:12345...")
 
 		fmt.Fprintln(os.Stderr, "\n  7. Ultra Silent (Exit code only):")
-		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -ultrasilent")
+		fmt.Fprintln(os.Stderr, "     x509-cert-validator -cert leaf.pem -ultra-silent")
 		fmt.Fprintln(os.Stderr, "     (echo $?)")
+		fmt.Fprintln(os.Stderr, "\nNote: legacy flag names (e.g. -createCAbundle, -includeRoot, -showGraph,")
+		fmt.Fprintln(os.Stderr, "      -ultrasilent, -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted")
+		fmt.Fprintln(os.Stderr, "      as hidden aliases for backward compatibility.")
 	}
 
 	// --- CLI Arguments ---
+	//
+	// Naming convention: canonical flags use kebab-case (e.g. -create-ca-bundle).
+	// Legacy run-together / camelCase names (e.g. -createCAbundle, -includeRoot,
+	// -showGraph, -ultrasilent, -maxaia, -maxcrl, -maxlocal, -maxcert) remain
+	// accepted as HIDDEN aliases via aliasFlags() below for backward compatibility
+	// with existing scripts (incl. tests.sh) and operator muscle memory.
 	certPath := flag.String("cert", "", "Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.")
 	rootPath := flag.String("root", "", "Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).")
 	dnsName := flag.String("dns", "", "Optional: Verify specific DNS name")
@@ -111,20 +199,34 @@ func main() {
 	atTime := flag.String("at", "", "Optional: Validate at RFC3339 time")
 	enableCRL := flag.Bool("crl", false, "Enable certificate revocation checking (CRL)")
 	enableAIA := flag.Bool("aia", false, "Enable automatic AIA fetching")
-	createBundlePath := flag.String("createCAbundle", "", "Optional: Path to create/export CA bundle. On success, exports from verified chain(s).")
-	includeRoot := flag.Bool("includeRoot", false, "Include Root/Trust-Anchor certificate(s) in the generated bundle")
+	createBundlePath := flag.String("create-ca-bundle", "", "Optional: Path to create/export CA bundle. On success, exports from verified chain(s).")
+	includeRoot := flag.Bool("include-root", false, "Include Root/Trust-Anchor certificate(s) in the generated bundle")
 	usage := flag.String("type", "any", "Validation type: server, client, or any")
-	showGraph := flag.Bool("showGraph", false, "Display ASCII graph of the verified chain")
+	showGraph := flag.Bool("show-graph", false, "Display ASCII graph of the verified chain")
 	silent := flag.Bool("silent", false, "Output only pass/fail status and cert ID")
-	ultraSilent := flag.Bool("ultrasilent", false, "No output, exit code only (0=Pass, 1=Fail)")
+	ultraSilent := flag.Bool("ultra-silent", false, "No output, exit code only (0=Pass, 1=Fail)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	fpShowAll := flag.Bool("fp-show-all", false, "Show alternative fingerprint algo values (+MD5, SHA-384, SHA-512)")
 
 	// --- Size limit flags ---
-	maxAIA := flag.Int64("maxaia", DefaultMaxAIADownloadBytes, "Max bytes to download per AIA issuer fetch")
-	maxCRL := flag.Int64("maxcrl", DefaultMaxCRLDownloadBytes, "Max bytes to download per CRL URL")
-	maxLocal := flag.Int64("maxlocal", DefaultMaxLocalFileBytes, "Max bytes to read from local cert file")
-	maxRemote := flag.Int64("maxcert", DefaultMaxRemoteCertFileSize, "Max bytes to download for remote cert file (http/https)")
+	maxAIA := flag.Int64("max-aia", DefaultMaxAIADownloadBytes, "Max bytes to download per AIA issuer fetch")
+	maxCRL := flag.Int64("max-crl", DefaultMaxCRLDownloadBytes, "Max bytes to download per CRL URL")
+	maxLocal := flag.Int64("max-local", DefaultMaxLocalFileBytes, "Max bytes to read from local cert file")
+	maxRemote := flag.Int64("max-cert", DefaultMaxRemoteCertFileSize, "Max bytes to download for remote cert file (http/https)")
+
+	// --- Backward-compatibility aliases (hidden from -h output) ---
+	// Each alias binds to the SAME underlying variable as its canonical flag, so
+	// behavior is identical regardless of which name the caller used.
+	aliasFlags(map[string]string{
+		"createCAbundle": "create-ca-bundle",
+		"includeRoot":    "include-root",
+		"showGraph":      "show-graph",
+		"ultrasilent":    "ultra-silent",
+		"maxaia":         "max-aia",
+		"maxcrl":         "max-crl",
+		"maxlocal":       "max-local",
+		"maxcert":        "max-cert",
+	})
 
 	flag.Parse()
 
@@ -135,7 +237,7 @@ func main() {
 
 	// --- Apply size limits ---
 	if *maxAIA <= 0 || *maxCRL <= 0 || *maxLocal <= 0 || *maxRemote <= 0 {
-		exitErr(fmt.Errorf("size limits must be > 0 (got maxaia=%d maxcrl=%d maxlocal=%d maxcert=%d)", *maxAIA, *maxCRL, *maxLocal, *maxRemote))
+		exitErr(fmt.Errorf("size limits must be > 0 (got max-aia=%d max-crl=%d max-local=%d max-cert=%d)", *maxAIA, *maxCRL, *maxLocal, *maxRemote))
 	}
 	maxAIADownloadBytes = *maxAIA
 	maxCRLDownloadBytes = *maxCRL
