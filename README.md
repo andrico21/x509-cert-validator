@@ -54,7 +54,7 @@ Usage of ./x509-cert-validator:
         Optional: Validate at RFC3339 time
   -cert string
         Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.
-  -createCAbundle string
+  -create-ca-bundle string
         Optional: Path to create/export CA bundle. On success, exports from verified chain(s).
   -crl
         Enable certificate revocation checking (CRL)
@@ -62,19 +62,19 @@ Usage of ./x509-cert-validator:
         Optional: Verify specific DNS name
   -fp-show-all
         Show alternative fingerprint algo values (+MD5, SHA-384, SHA-512)
-  -includeRoot
+  -include-root
         Include Root/Trust-Anchor certificate(s) in the generated bundle
-  -maxaia int
+  -max-aia int
         Max bytes to download per AIA issuer fetch (default 524288)
-  -maxcert int
+  -max-cert int
         Max bytes to download for remote cert file (http/https) (default 524288)
-  -maxcrl int
+  -max-crl int
         Max bytes to download per CRL URL (default 20971520)
-  -maxlocal int
+  -max-local int
         Max bytes to read from local cert file (default 1048576)
   -root string
         Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).
-  -showGraph
+  -show-graph
         Display ASCII graph of the verified chain
   -silent
         Output only pass/fail status and cert ID
@@ -82,10 +82,14 @@ Usage of ./x509-cert-validator:
         Optional: Override TLS SNI for live HTTPS probes (https://...)
   -type string
         Validation type: server, client, or any (default "any")
-  -ultrasilent
+  -ultra-silent
         No output, exit code only (0=Pass, 1=Fail)
   -version
         Print version and exit
+
+Note: Legacy camelCase aliases (-createCAbundle, -includeRoot, -showGraph,
+-ultrasilent, -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted for
+backward compatibility but are hidden from help output.
 
 EXAMPLES:
   1. Live HTTPS Probe (Check server's current chain):
@@ -100,23 +104,23 @@ EXAMPLES:
      x509-cert-validator -cert leaf.pem -crl
 
   4. Fix Local Chain & Export Bundle:
-     x509-cert-validator -cert leaf.pem -aia -createCAbundle full-chain.crt
-     Exporting Root CA (-includeRoot) requires explicit specification of root CA's certificate file (-root <filename>).
-     x509-cert-validator -cert leaf.pem -aia -createCAbundle bundle.crt -includeRoot -root custom-root-ca.crt
+     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle full-chain.crt
+     Exporting Root CA (-include-root) requires explicit specification of root CA's certificate file (-root <filename>).
+     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle bundle.crt -include-root -root custom-root-ca.crt
      (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)
      (    Never install an unknown Root CA unless you know what you are doing)
      (    and have verified its fingerprint manually.)
      (    Trusting a malicious Root might lead to interception of your private data.)
 
   5. Visualization:
-     x509-cert-validator -cert leaf.pem -showGraph
+     x509-cert-validator -cert leaf.pem -show-graph
 
   6. Silent Mode (Short status line only):
      x509-cert-validator -cert leaf.pem -silent
      > PASS [github.com] Serial:12345...
 
   7. Ultra Silent (Exit code only):
-     x509-cert-validator -cert leaf.pem -ultrasilent
+     x509-cert-validator -cert leaf.pem -ultra-silent
      (echo $?)
 ```
 
@@ -194,7 +198,7 @@ Root Trust: System Trust Store
 ## Full certificate check - including incorrect DNS name
 
 ```shell
-./x509-cert-validator -cert https://google.com -dns google.ru -aia -crl -showGraph
+./x509-cert-validator -cert https://google.com -dns google.ru -aia -crl -show-graph
 Runtime: go1.26.0
 Validation Time: 2026-02-15T20:46:39+04:00
 --- Loading Roots (System) ---
@@ -236,7 +240,7 @@ Root Trust: System Trust Store
 
 ## Full certificate check - including correct DNS name
 ```shell
-/x509-cert-validator -cert https://google.com -dns google.com -aia -crl -showGraph
+/x509-cert-validator -cert https://google.com -dns google.com -aia -crl -show-graph
 Runtime: go1.26.0
 Validation Time: 2026-02-15T20:48:04+04:00
 --- Loading Roots (System) ---
@@ -374,5 +378,5 @@ x509-cert-validator.exe -root C:\Temp\root.crt -cert C:\Temp\some-cert.crt -aia
 
 If root is reachable via AIA - it will be added to bundle with the following command:
 ```shell
-x509-cert-validator.exe -cert C:\Temp\cert.crt -aia -createCAbundle .\cabundle.crt -includeRoot
+x509-cert-validator.exe -cert C:\Temp\cert.crt -aia -create-ca-bundle .\cabundle.crt -include-root
 ```
