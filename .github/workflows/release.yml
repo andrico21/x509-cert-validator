@@ -45,7 +45,7 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           go build -buildmode=pie -trimpath \
             -ldflags="-s -w -X main.version=${VERSION}" \
-            -o x509-cert-validator-${{ matrix.suffix }} .
+            -o x509-cert-validator-${{ matrix.suffix }} ./cmd/x509-cert-validator
 
       - name: Compress binary
         run: zip -9 x509-cert-validator-${{ matrix.suffix }}.zip x509-cert-validator-${{ matrix.suffix }}
