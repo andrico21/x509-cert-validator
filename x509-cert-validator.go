@@ -255,6 +255,13 @@ func main() {
 	}
 
 	// --- 5. Load Target Cert (File, HTTP, or HTTPS probe) ---
+	// C-1 warning: HTTPS live probe without -dns/-sni skips hostname verification.
+	// This tool is diagnostic; we keep the behavior but make the bypass loud.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(*certPath)), "https://") &&
+		strings.TrimSpace(*dnsName) == "" && sniOverride == "" {
+		logNormal("\n⚠️  Hostname verification SKIPPED (no -dns/-sni provided for HTTPS probe). Chain validity only.\n")
+	}
+
 	targetCerts := loadAll(*certPath)
 	if len(targetCerts) == 0 {
 		exitErr(fmt.Errorf("no certificates loaded from -cert"))
@@ -369,6 +376,11 @@ func main() {
 
 	logNormal("\n=== Verifying Chain ===\n")
 	logNormal("Root Trust: %s\n", rootSourceLabel)
+	// M-1: if system roots failed to load earlier, re-warn at verification time
+	// so the user understands WHY "unknown authority" is about to happen.
+	if rootSourceLabel == "Empty/Failed Store" {
+		logNormal("\n⚠️  CRITICAL: Verifying against EMPTY trust pool (system roots failed to load). Verification WILL fail unless -root is provided.\n\n")
+	}
 	chains, err := leaf.Verify(opts)
 	if err != nil {
 		handleVerifyError(err, *certPath, *rootPath, *usage)
@@ -533,10 +545,20 @@ func buildBundleFromDiscovered(inters []*x509.Certificate, roots []*x509.Certifi
 
 func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsWritten int, err error) {
 	tmpPath := path + ".tmp"
-	f, err := os.Create(tmpPath)
+	// M-4: explicit perms (0644) and named-return + deferred cleanup so we never
+	// leave a stale .tmp file behind on partial failure.
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return 0, 0, err
 	}
+	committed := false
+	defer func() {
+		// Close (idempotent: ignore second-close errors via _ )
+		_ = f.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	seen := make(map[string]bool)
 	for _, c := range certs {
@@ -550,9 +572,7 @@ func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsW
 		}
 		seen[k] = true
 
-		if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmpPath)
+		if err = pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
 			return written, rootsWritten, err
 		}
 		written++
@@ -561,16 +581,15 @@ func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsW
 		}
 	}
 
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
+	if err = f.Close(); err != nil {
 		return written, rootsWritten, err
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+	if err = os.Rename(tmpPath, path); err != nil {
 		return written, rootsWritten, err
 	}
 
+	committed = true
 	return written, rootsWritten, nil
 }
 
@@ -853,9 +872,10 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 			}
 
 			// Pair dedupe (prevents duplicate checks across multiple verified chain paths)
+			// Use full SHA-256 to avoid collision risk on truncated keys.
 			childFP := sha256.Sum256(child.Raw)
 			parentFP := sha256.Sum256(parent.Raw)
-			pairKey := hex.EncodeToString(childFP[:8]) + ":" + hex.EncodeToString(parentFP[:8])
+			pairKey := hex.EncodeToString(childFP[:]) + ":" + hex.EncodeToString(parentFP[:])
 
 			if checkedPair[pairKey] {
 				logNormal("ℹ️  Skipping CRL re-check (already checked) for '%s' issued by '%s'\n", cnOrDN(child), cnOrDN(parent))
@@ -868,6 +888,8 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 
 			for idx, cdpURL := range child.CRLDistributionPoints {
 				if !strings.HasPrefix(cdpURL, "http://") && !strings.HasPrefix(cdpURL, "https://") {
+					// M-2: surface skipped non-http(s) CRL URLs.
+					logNormal("⚠️  Skipping CRL URL with unsupported scheme [%d/%d] for '%s': %s\n", idx+1, len(child.CRLDistributionPoints), cnOrDN(child), cdpURL)
 					continue
 				}
 
@@ -917,6 +939,16 @@ func checkCRL(chains [][]*x509.Certificate, now time.Time) error {
 					}
 					crl = parsed
 					crlCache[cdpURL] = crlCacheEntry{rl: parsed}
+				}
+
+				// H-2: verify CRL Issuer DN matches parent CA Subject DN before signature check.
+				// Catches the rare same-key-different-CA edge case earlier with a clearer error
+				// (the subsequent sig check would also reject, but with a less informative message).
+				if !bytes.Equal(crl.RawIssuer, parent.RawSubject) {
+					logNormal("⚠️  CRL Issuer DN does not match parent CA Subject DN (CRL Issuer=%q vs Parent=%q). Treating CRL as invalid.\n",
+						crl.Issuer.String(), parent.Subject.String())
+					errMsgs = append(errMsgs, fmt.Sprintf("%s: CRL Issuer DN does not match parent CA Subject DN", cdpURL))
+					continue
 				}
 
 				// Signature must validate against issuer
@@ -984,6 +1016,8 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 
 	for i, u := range cert.IssuingCertificateURL {
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			// M-2: surface skipped non-http(s) AIA URLs instead of silently ignoring them.
+			logNormal("⚠️  Skipping AIA URL with unsupported scheme [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
 			continue
 		}
 		logNormal("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
@@ -1020,8 +1054,26 @@ func fetchAIA(cert *x509.Certificate) (*x509.Certificate, error) {
 
 		fetchedCerts := parseCertsFromDataSafe(data)
 		if len(fetchedCerts) > 0 {
-			flagUnsupportedIfNeeded(fetchedCerts[0])
-			return fetchedCerts[0], nil
+			fetched := fetchedCerts[0]
+			flagUnsupportedIfNeeded(fetched)
+
+			// H-1: verify name + signature binding between fetched cert and the child whose AIA we followed.
+			// Diagnostic-friendly: on mismatch, WARN but still return the cert so the operator can SEE
+			// what the AIA URL served. The final x509.Verify is the cryptographic safety net.
+			nameOK := bytes.Equal(cert.RawIssuer, fetched.RawSubject)
+			sigOK := cert.CheckSignatureFrom(fetched) == nil
+			switch {
+			case !nameOK && !sigOK:
+				logNormal("   ⚠️  AIA cert from %s does NOT match expected issuer of '%s' (subject mismatch AND bad signature). Adding to pool anyway for diagnostic visibility.\n", u, cnOrDN(cert))
+			case !nameOK:
+				logNormal("   ⚠️  AIA cert from %s has Subject DN that does NOT match expected Issuer DN of '%s'. Adding to pool anyway for diagnostic visibility.\n", u, cnOrDN(cert))
+			case !sigOK:
+				logNormal("   ⚠️  AIA cert from %s did NOT sign '%s' (signature check failed). Adding to pool anyway for diagnostic visibility.\n", u, cnOrDN(cert))
+			default:
+				logNormal("   ✅ AIA cert verified against child issuer (name + signature OK).\n")
+			}
+
+			return fetched, nil
 		}
 		logNormal("   ⚠️  Parse Failed\n")
 		lastErr = fmt.Errorf("unable to parse certificate data")
@@ -1041,7 +1093,7 @@ func readWithLimit(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func logNormal(format string, args ...interface{}) {
+func logNormal(format string, args ...any) {
 	if verbosity == LevelNormal {
 		fmt.Printf(format, args...)
 	}
