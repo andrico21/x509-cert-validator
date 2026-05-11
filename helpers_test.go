@@ -8,7 +8,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"flag"
 	"io"
 	"math/big"
 	"net"
@@ -408,129 +407,14 @@ func TestBuildBundleFromDiscovered(t *testing.T) {
 }
 
 // ============================================================================
-// aliasFlags / hidden alias filtering
+// aliasFlags / printDefaultsExcludingAliases / isZeroValueFlag
 // ============================================================================
-
-func TestAliasFlagsBindsSameValue(t *testing.T) {
-	// Use a fresh FlagSet to avoid polluting the global flag set
-	saved := flag.CommandLine
-	savedAliases := hiddenAliasFlags
-	t.Cleanup(func() {
-		flag.CommandLine = saved
-		hiddenAliasFlags = savedAliases
-	})
-	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
-	hiddenAliasFlags = make(map[string]struct{})
-
-	canonical := flag.Int("max-foo", 100, "max foo")
-	aliasFlags(map[string]string{"maxfoo": "max-foo"})
-
-	if _, ok := hiddenAliasFlags["maxfoo"]; !ok {
-		t.Error("alias not registered in hiddenAliasFlags")
-	}
-
-	// Setting via alias must mutate canonical
-	if err := flag.CommandLine.Parse([]string{"-maxfoo", "999"}); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if *canonical != 999 {
-		t.Errorf("alias did not mutate canonical: got %d, want 999", *canonical)
-	}
-}
-
-func TestAliasFlagsPanicsOnUnknownCanonical(t *testing.T) {
-	saved := flag.CommandLine
-	savedAliases := hiddenAliasFlags
-	t.Cleanup(func() {
-		flag.CommandLine = saved
-		hiddenAliasFlags = savedAliases
-	})
-	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
-	hiddenAliasFlags = make(map[string]struct{})
-
-	defer func() {
-		if recover() == nil {
-			t.Error("expected panic for unknown canonical")
-		}
-	}()
-	aliasFlags(map[string]string{"alias": "nonexistent"})
-}
-
-func TestPrintDefaultsExcludingAliases(t *testing.T) {
-	saved := flag.CommandLine
-	savedAliases := hiddenAliasFlags
-	t.Cleanup(func() {
-		flag.CommandLine = saved
-		hiddenAliasFlags = savedAliases
-	})
-	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
-	hiddenAliasFlags = make(map[string]struct{})
-
-	flag.Int("max-foo", 100, "max foo")
-	flag.String("type", "any", "validation type")
-	flag.Bool("crl", false, "enable CRL")
-	aliasFlags(map[string]string{"maxfoo": "max-foo"})
-
-	var buf strings.Builder
-	printDefaultsExcludingAliases(&buf)
-	out := buf.String()
-
-	if !strings.Contains(out, "-max-foo") {
-		t.Error("canonical -max-foo should be present")
-	}
-	if strings.Contains(out, "-maxfoo") {
-		t.Errorf("alias -maxfoo should NOT appear in help output, got:\n%s", out)
-	}
-	// int default bare
-	if !strings.Contains(out, "(default 100)") {
-		t.Errorf("expected bare int default '(default 100)', got:\n%s", out)
-	}
-	// string default quoted
-	if !strings.Contains(out, `(default "any")`) {
-		t.Errorf("expected quoted string default '(default \"any\")', got:\n%s", out)
-	}
-	// bool default omitted (zero value)
-	if strings.Contains(out, "(default false)") {
-		t.Errorf("zero-value bool default should be omitted, got:\n%s", out)
-	}
-}
-
-// ============================================================================
-// isZeroValueFlag
-// ============================================================================
-
-func TestIsZeroValueFlag(t *testing.T) {
-	saved := flag.CommandLine
-	t.Cleanup(func() { flag.CommandLine = saved })
-	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
-
-	flag.Int("i", 0, "")
-	flag.String("s", "", "")
-	flag.Bool("b", false, "")
-
-	fi := flag.Lookup("i")
-	fs := flag.Lookup("s")
-	fb := flag.Lookup("b")
-
-	if !isZeroValueFlag(fi, "0") {
-		t.Error("int 0 should be zero")
-	}
-	if isZeroValueFlag(fi, "5") {
-		t.Error("int 5 should NOT be zero")
-	}
-	if !isZeroValueFlag(fs, "") {
-		t.Error("empty string should be zero")
-	}
-	if isZeroValueFlag(fs, "x") {
-		t.Error("non-empty string should NOT be zero")
-	}
-	if !isZeroValueFlag(fb, "false") {
-		t.Error("false bool should be zero")
-	}
-	if isZeroValueFlag(fb, "true") {
-		t.Error("true bool should NOT be zero")
-	}
-}
+// These helpers were moved into the internal/cli package as part of PR5b
+// Step I (cli extraction). Their unit tests will be re-introduced in
+// internal/cli/cli_test.go during Step K (test split). End-to-end alias
+// behavior is covered today by tests.sh which exercises every legacy
+// spelling (-createCAbundle, -includeRoot, -showGraph, -ultrasilent,
+// -maxaia, -maxcrl, -maxlocal, -maxcert).
 
 // ============================================================================
 // Compile-time checks
