@@ -47,10 +47,10 @@ const DefaultPerFetchTimeout = 10 * time.Second
 // with NewFetcher; reuse across multiple Fetch calls in a single
 // validation run so connection-pool benefits accrue.
 type Fetcher struct {
-	Client          *http.Client    // required; supplies CheckRedirect + connection pool
+	Client          *http.Client     // required; supplies CheckRedirect + connection pool
 	Logger          validator.Logger // required; progress diagnostics
-	MaxBytes        int64           // per-fetch download cap; <=0 means unlimited (NOT recommended)
-	PerFetchTimeout time.Duration   // applied per URL; zero means DefaultPerFetchTimeout
+	MaxBytes        int64            // per-fetch download cap; <=0 means unlimited (NOT recommended)
+	PerFetchTimeout time.Duration    // applied per URL; zero means DefaultPerFetchTimeout
 }
 
 // NewFetcher constructs a Fetcher with the supplied dependencies.

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/md5" // #nosec G501 -- MD5 fingerprints are intentionally exposed (-fp-show-all) as a diagnostic identifier, not for cryptographic security.
+	"crypto/md5"  // #nosec G501 -- MD5 fingerprints are intentionally exposed (-fp-show-all) as a diagnostic identifier, not for cryptographic security.
 	"crypto/sha1" // #nosec G505 -- SHA-1 fingerprints are a standard, intentional diagnostic identifier (parity with openssl x509 -fingerprint -sha1).
 	"crypto/sha256"
 	"crypto/sha512"
@@ -1008,4 +1008,3 @@ func printNameConstraints(prefix string, cert *x509.Certificate) {
 }
 
 // --- Key helpers ---
-
