@@ -22,10 +22,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrico21/x509-cert-validator/internal/aia"
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/certload"
 	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/errs"
+	"github.com/andrico21/x509-cert-validator/internal/validator"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
@@ -896,6 +898,13 @@ func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) 
 	return nil
 }
 
+// fetchAIA adapts aia.Fetcher to the legacy global-flag contract used
+// by main's chain-walk loop. The Fetcher is constructed lazily on each
+// call so per-fetch settings (PerFetchTimeout, MaxBytes) always reflect
+// the current global values; this matches the original inline behavior
+// exactly. A future step will hoist construction up to the Validator
+// struct so the *http.Client and Logger are shared across all network
+// callers in a run.
 func fetchAIA(ctx context.Context, cert *x509.Certificate) (*x509.Certificate, error) {
 	client := &http.Client{
 		Timeout: DefaultHTTPTimeout,
@@ -906,79 +915,24 @@ func fetchAIA(ctx context.Context, cert *x509.Certificate) (*x509.Certificate, e
 			return nil
 		},
 	}
-	var lastErr error
-
-	for i, u := range cert.IssuingCertificateURL {
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			// M-2: surface skipped non-http(s) AIA URLs instead of silently ignoring them.
-			logNormal("⚠️  Skipping AIA URL with unsupported scheme [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
-			continue
-		}
-		logNormal("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
-
-		// Per-fetch cap layered under the global ctx.
-		fetchCtx, cancel := context.WithTimeout(ctx, DefaultHTTPTimeout)
-		req, err := http.NewRequestWithContext(fetchCtx, "GET", u, nil)
-		if err != nil {
-			cancel()
-			logNormal("   ⚠️  Bad Request: %v\n", err)
-			lastErr = err
-			continue
-		}
-		req.Header.Set("User-Agent", "x509-cert-validator/1.0")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			cancel()
-			logNormal("   ⚠️  Connection Failed: %v\n", err)
-			lastErr = err
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			_ = resp.Body.Close()
-			cancel()
-			logNormal("   ⚠️  HTTP Error: %d\n", resp.StatusCode)
-			lastErr = fmt.Errorf("status %d", resp.StatusCode)
-			continue
-		}
-
-		data, err := readWithLimit(resp.Body, maxAIADownloadBytes)
-		_ = resp.Body.Close()
-		cancel()
-		if err != nil {
-			logNormal("   ⚠️  Read Failed: %v\n", err)
-			lastErr = err
-			continue
-		}
-
-		fetchedCerts := parseCertsFromDataSafe(data)
-		if len(fetchedCerts) > 0 {
-			fetched := fetchedCerts[0]
-			flagUnsupportedIfNeeded(fetched)
-
-			// H-1: verify name + signature binding between fetched cert and the child whose AIA we followed.
-			// Diagnostic-friendly: on mismatch, WARN but still return the cert so the operator can SEE
-			// what the AIA URL served. The final x509.Verify is the cryptographic safety net.
-			nameOK := bytes.Equal(cert.RawIssuer, fetched.RawSubject)
-			sigOK := cert.CheckSignatureFrom(fetched) == nil
-			switch {
-			case !nameOK && !sigOK:
-				logNormal("   ⚠️  AIA cert from %s does NOT match expected issuer of '%s' (subject mismatch AND bad signature). Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
-			case !nameOK:
-				logNormal("   ⚠️  AIA cert from %s has Subject DN that does NOT match expected Issuer DN of '%s'. Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
-			case !sigOK:
-				logNormal("   ⚠️  AIA cert from %s did NOT sign '%s' (signature check failed). Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
-			default:
-				logNormal("   ✅ AIA cert verified against child issuer (name + signature OK).\n")
-			}
-
-			return fetched, nil
-		}
-		logNormal("   ⚠️  Parse Failed\n")
-		lastErr = fmt.Errorf("unable to parse certificate data")
+	logger := validator.NewStderrLogger(validator.Verbosity(verbosity))
+	f := &aia.Fetcher{
+		Client:          client,
+		Logger:          logger,
+		MaxBytes:        maxAIADownloadBytes,
+		PerFetchTimeout: DefaultHTTPTimeout,
 	}
-	return nil, fmt.Errorf("all AIA URLs failed. Last error: %v", lastErr)
+	res, err := f.Fetch(ctx, cert)
+	if res.HasUnsupportedAlgo {
+		hasUnsupportedAlgo = true
+	}
+	if res.HasInsecureAlgo {
+		hasInsecureAlgo = true
+	}
+	if res.Parent != nil {
+		flagUnsupportedIfNeeded(res.Parent)
+	}
+	return res.Parent, err
 }
 
 // readWithLimit is a thin wrapper around certload.ReadWithLimit kept
