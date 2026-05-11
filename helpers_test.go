@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
@@ -355,7 +356,7 @@ func TestParseRevocationListFromData(t *testing.T) {
 }
 
 // ============================================================================
-// buildBundleFromVerifiedChains
+// bundle.FromVerifiedChains
 // ============================================================================
 
 func TestBuildBundleFromVerifiedChains(t *testing.T) {
@@ -366,27 +367,27 @@ func TestBuildBundleFromVerifiedChains(t *testing.T) {
 	chain := [][]*x509.Certificate{{leaf, inter, root}}
 
 	// without root
-	out := buildBundleFromVerifiedChains(chain, false)
+	out := bundle.FromVerifiedChains(chain, false)
 	if len(out) != 1 || out[0] != inter {
 		t.Errorf("includeRoot=false: expected [inter], got %d certs", len(out))
 	}
 
 	// with root
-	out2 := buildBundleFromVerifiedChains(chain, true)
+	out2 := bundle.FromVerifiedChains(chain, true)
 	if len(out2) != 2 || out2[0] != inter || out2[1] != root {
 		t.Errorf("includeRoot=true: expected [inter, root], got %d certs", len(out2))
 	}
 
 	// dedup across multiple chains
 	chains := [][]*x509.Certificate{{leaf, inter, root}, {leaf, inter, root}}
-	out3 := buildBundleFromVerifiedChains(chains, true)
+	out3 := bundle.FromVerifiedChains(chains, true)
 	if len(out3) != 2 {
 		t.Errorf("dedup: expected 2 unique, got %d", len(out3))
 	}
 }
 
 // ============================================================================
-// buildBundleFromDiscovered
+// bundle.FromDiscovered
 // ============================================================================
 
 func TestBuildBundleFromDiscovered(t *testing.T) {
@@ -394,12 +395,12 @@ func TestBuildBundleFromDiscovered(t *testing.T) {
 	inter1, _ := selfSignedRoot(t, "Inter1") // distinct cert (just need .Raw)
 	inter2, _ := selfSignedRoot(t, "Inter2")
 
-	out := buildBundleFromDiscovered([]*x509.Certificate{inter1, nil, inter2, inter1}, []*x509.Certificate{root}, false)
+	out := bundle.FromDiscovered([]*x509.Certificate{inter1, nil, inter2, inter1}, []*x509.Certificate{root}, false)
 	if len(out) != 2 {
 		t.Errorf("includeRoot=false: expected 2 (deduped), got %d", len(out))
 	}
 
-	out2 := buildBundleFromDiscovered([]*x509.Certificate{inter1, inter2}, []*x509.Certificate{root, nil}, true)
+	out2 := bundle.FromDiscovered([]*x509.Certificate{inter1, inter2}, []*x509.Certificate{root, nil}, true)
 	if len(out2) != 3 {
 		t.Errorf("includeRoot=true: expected 3, got %d", len(out2))
 	}

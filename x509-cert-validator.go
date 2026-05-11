@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
@@ -513,17 +514,17 @@ func main() {
 			logNormal("   System root certificates cannot be exported into the bundle. Use -root <file> to provide an explicit root.\n")
 		}
 
-		toBundle := buildBundleFromVerifiedChains(chains, *includeRoot)
+		toBundle := bundle.FromVerifiedChains(chains, *includeRoot)
 
 		// If for some reason Go didn't return anything to bundle, fall back to what we discovered locally.
 		if len(toBundle) == 0 {
-			toBundle = buildBundleFromDiscovered(discoveredIntermediates, rootCerts, *includeRoot)
+			toBundle = bundle.FromDiscovered(discoveredIntermediates, rootCerts, *includeRoot)
 		}
 
 		if len(toBundle) == 0 {
 			logNormal("⚠️  No certificates available to bundle.\n")
 		} else {
-			written, rootsWritten, err := writeBundlePEM(*createBundlePath, toBundle)
+			written, rootsWritten, err := bundle.WritePEM(*createBundlePath, toBundle)
 			if err != nil {
 				logNormal("❌ Failed to create bundle file: %v\n", err)
 			} else {
@@ -602,113 +603,6 @@ func main() {
 }
 
 // --- Bundle helpers ---
-
-// Build bundle from verified chains: include intermediates always, and include trust anchor only if includeRoot.
-// Never includes the leaf.
-func buildBundleFromVerifiedChains(chains [][]*x509.Certificate, includeRoot bool) []*x509.Certificate {
-	seen := make(map[string]bool)
-	var out []*x509.Certificate
-
-	for _, chain := range chains {
-		// chain[0] is leaf
-		for idx := 1; idx < len(chain); idx++ {
-			c := chain[idx]
-			// idx==len(chain)-1 is trust anchor (root/anchor)
-			if idx == len(chain)-1 && !includeRoot {
-				continue
-			}
-			fp := sha256.Sum256(c.Raw)
-			k := hex.EncodeToString(fp[:])
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// Fallback bundle from what we discovered locally (server-sent + AIA fetched + CLI inters), plus optional roots list.
-// Never includes leaf (not provided here).
-func buildBundleFromDiscovered(inters []*x509.Certificate, roots []*x509.Certificate, includeRoot bool) []*x509.Certificate {
-	seen := make(map[string]bool)
-	var out []*x509.Certificate
-
-	add := func(c *x509.Certificate) {
-		if c == nil {
-			return
-		}
-		fp := sha256.Sum256(c.Raw)
-		k := hex.EncodeToString(fp[:])
-		if seen[k] {
-			return
-		}
-		seen[k] = true
-		out = append(out, c)
-	}
-
-	for _, c := range inters {
-		add(c)
-	}
-	if includeRoot {
-		for _, r := range roots {
-			add(r)
-		}
-	}
-	return out
-}
-
-func writeBundlePEM(path string, certs []*x509.Certificate) (written int, rootsWritten int, err error) {
-	tmpPath := path + ".tmp"
-	// M-4: explicit perms (0644) and named-return + deferred cleanup so we never
-	// leave a stale .tmp file behind on partial failure.
-	// #nosec G302 G304 -- bundle is a public PEM artifact (CA certificates); 0o644 is the intentional, documented file mode for distribution. Path is user-supplied by design (-createCAbundle <path>).
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return 0, 0, err
-	}
-	committed := false
-	defer func() {
-		// Close (idempotent: ignore second-close errors via _ )
-		_ = f.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	seen := make(map[string]bool)
-	for _, c := range certs {
-		if c == nil {
-			continue
-		}
-		fp := sha256.Sum256(c.Raw)
-		k := hex.EncodeToString(fp[:])
-		if seen[k] {
-			continue
-		}
-		seen[k] = true
-
-		if err = pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}); err != nil {
-			return written, rootsWritten, err
-		}
-		written++
-		if x509util.IsSelfSigned(c) {
-			rootsWritten++
-		}
-	}
-
-	if err = f.Close(); err != nil {
-		return written, rootsWritten, err
-	}
-
-	if err = os.Rename(tmpPath, path); err != nil {
-		return written, rootsWritten, err
-	}
-
-	committed = true
-	return written, rootsWritten, nil
-}
 
 // --- Helpers ---
 
