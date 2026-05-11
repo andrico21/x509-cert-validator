@@ -97,7 +97,7 @@ jobs:
           python3 --version
 
       - name: Build validator
-        run: go build -o ./x509-cert-validator .
+        run: go build -o ./x509-cert-validator ./cmd/x509-cert-validator
 
       - name: Run integration suite (tests.sh)
         run: bash ./tests.sh -validator "$PWD/x509-cert-validator"
