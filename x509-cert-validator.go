@@ -68,12 +68,19 @@ var (
 	hasInsecureAlgo    bool              // Flag to track if Go rejected verification due to insecure algorithm policy (e.g., SHA1)
 	sniOverride        string            // Optional SNI override for live HTTPS probes
 
-	// Effective limits (set from flags)
-	maxAIADownloadBytes   int64 = DefaultMaxAIADownloadBytes
-	maxCRLDownloadBytes   int64 = DefaultMaxCRLDownloadBytes
+	// Effective limits (set from flags). MaxAIA/MaxCRL now live on
+	// runValidator; only globals still referenced by stateful per-print
+	// helpers remain here pending Step J.
 	maxLocalFileBytes     int64 = DefaultMaxLocalFileBytes
 	maxRemoteCertFileSize int64 = DefaultMaxRemoteCertFileSize
 	showAllFP             bool
+
+	// runValidator carries the run-scoped *http.Client + Logger + size
+	// caps shared by every network caller (AIA, CRL). Built once in
+	// main() from the parsed cli.Config; nil before main() initializes
+	// it. Future Step J will move main() out of this package and this
+	// global will become a parameter threaded through the call chain.
+	runValidator *validator.Validator
 )
 
 func main() {
@@ -103,13 +110,23 @@ func main() {
 	// --- Mirror cfg into legacy globals + locals so the rest of main()
 	// continues to work unchanged. Future steps will hoist these into a
 	// Validator struct and remove the globals entirely. ---
-	maxAIADownloadBytes = cfg.MaxAIA
-	maxCRLDownloadBytes = cfg.MaxCRL
 	maxLocalFileBytes = cfg.MaxLocal
 	maxRemoteCertFileSize = cfg.MaxRemote
 	showAllFP = cfg.FPShowAll
 	verbosity = int(cfg.Verbosity)
 	sniOverride = cfg.SNI
+
+	// Build the run-scoped Validator: one *http.Client (connection pool
+	// shared across AIA + CRL fetches in this run), one Logger, all
+	// size caps captured up front. Subsequent network adapters read
+	// from runValidator instead of allocating per-call.
+	runValidator = validator.New(
+		validator.Verbosity(verbosity),
+		DefaultHTTPTimeout,
+		DefaultMaxHTTPRedirects,
+		cfg.MaxAIA, cfg.MaxCRL, cfg.MaxLocal, cfg.MaxRemote,
+		nil, // logger=nil -> NewStderrLogger(level)
+	)
 
 	// Pointer locals preserve the legacy *string / *bool deref pattern
 	// downstream without touching every call site.
@@ -569,28 +586,15 @@ func highlightLeafIssues(cert *x509.Certificate) {
 }
 
 // checkCRL adapts crl.Checker to the legacy global-flag contract used
-// by main's CRL-check call site. The Checker is constructed lazily on
-// each call so per-fetch settings (PerFetchTimeout, MaxBytes) always
-// reflect the current global values; this matches the original inline
-// behavior exactly. A future step will hoist construction up to the
-// Validator struct so the *http.Client and Logger are shared across
-// all network callers in a run.
+// by main's CRL-check call site. Built around the run-scoped
+// runValidator so the *http.Client connection pool is shared with
+// every AIA fetch and remote-cert download in the same run.
 func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) error {
-	client := &http.Client{
-		Timeout: DefaultHTTPTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= DefaultMaxHTTPRedirects {
-				return fmt.Errorf("stopped after %d redirects", DefaultMaxHTTPRedirects)
-			}
-			return nil
-		},
-	}
-	logger := validator.NewStderrLogger(validator.Verbosity(verbosity))
 	c := &crl.Checker{
-		Client:          client,
-		Logger:          logger,
-		MaxBytes:        maxCRLDownloadBytes,
-		PerFetchTimeout: DefaultHTTPTimeout,
+		Client:          runValidator.HTTPClient,
+		Logger:          runValidator.Logger,
+		MaxBytes:        runValidator.MaxCRLBytes,
+		PerFetchTimeout: runValidator.PerFetchTimeout,
 	}
 	res, err := c.Check(ctx, chains, now)
 	if res.HasUnsupportedAlgo {
@@ -603,28 +607,15 @@ func checkCRL(ctx context.Context, chains [][]*x509.Certificate, now time.Time) 
 }
 
 // fetchAIA adapts aia.Fetcher to the legacy global-flag contract used
-// by main's chain-walk loop. The Fetcher is constructed lazily on each
-// call so per-fetch settings (PerFetchTimeout, MaxBytes) always reflect
-// the current global values; this matches the original inline behavior
-// exactly. A future step will hoist construction up to the Validator
-// struct so the *http.Client and Logger are shared across all network
-// callers in a run.
+// by main's chain-walk loop. Built around the run-scoped runValidator
+// so the *http.Client connection pool is shared with every CRL fetch
+// and remote-cert download in the same run.
 func fetchAIA(ctx context.Context, cert *x509.Certificate) (*x509.Certificate, error) {
-	client := &http.Client{
-		Timeout: DefaultHTTPTimeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= DefaultMaxHTTPRedirects {
-				return fmt.Errorf("stopped after %d redirects", DefaultMaxHTTPRedirects)
-			}
-			return nil
-		},
-	}
-	logger := validator.NewStderrLogger(validator.Verbosity(verbosity))
 	f := &aia.Fetcher{
-		Client:          client,
-		Logger:          logger,
-		MaxBytes:        maxAIADownloadBytes,
-		PerFetchTimeout: DefaultHTTPTimeout,
+		Client:          runValidator.HTTPClient,
+		Logger:          runValidator.Logger,
+		MaxBytes:        runValidator.MaxAIABytes,
+		PerFetchTimeout: runValidator.PerFetchTimeout,
 	}
 	res, err := f.Fetch(ctx, cert)
 	if res.HasUnsupportedAlgo {
@@ -873,23 +864,6 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
 	}
 	if err != nil {
 		exitErr(err)
-	}
-	for _, c := range res.Certs {
-		flagUnsupportedIfNeeded(c)
-	}
-	return res.Certs
-}
-
-// parseCertsFromDataSafe adapts certload.ParseCertsSafe to the legacy
-// global-flag contract. Unlike parseCertsFromData it never aborts and
-// never logs; an empty return slice is a normal outcome.
-func parseCertsFromDataSafe(data []byte) []*x509.Certificate {
-	res := certload.ParseCertsSafe(data)
-	if res.HasUnsupportedAlgo {
-		hasUnsupportedAlgo = true
-	}
-	if res.HasInsecureAlgo {
-		hasInsecureAlgo = true
 	}
 	for _, c := range res.Certs {
 		flagUnsupportedIfNeeded(c)
