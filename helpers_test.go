@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
 // ============================================================================
@@ -76,15 +78,15 @@ func issuedCert(t *testing.T, cn string, parent *x509.Certificate, parentKey *ec
 // ============================================================================
 
 func TestCnOrDN(t *testing.T) {
-	if got := cnOrDN(nil); got != "UNKNOWN" {
+	if got := x509util.CnOrDN(nil); got != "UNKNOWN" {
 		t.Errorf("nil cert: want UNKNOWN, got %q", got)
 	}
 	withCN := &x509.Certificate{Subject: pkix.Name{CommonName: "example.com", Organization: []string{"Acme"}}}
-	if got := cnOrDN(withCN); got != "example.com" {
+	if got := x509util.CnOrDN(withCN); got != "example.com" {
 		t.Errorf("with CN: want example.com, got %q", got)
 	}
 	noCN := &x509.Certificate{Subject: pkix.Name{Organization: []string{"Acme"}, Country: []string{"US"}}}
-	got := cnOrDN(noCN)
+	got := x509util.CnOrDN(noCN)
 	if !strings.Contains(got, "Acme") || !strings.Contains(got, "US") {
 		t.Errorf("no CN: expected DN containing Acme & US, got %q", got)
 	}
@@ -95,21 +97,21 @@ func TestCnOrDN(t *testing.T) {
 // ============================================================================
 
 func TestSerialHex(t *testing.T) {
-	if got := serialHex(nil); got != "?" {
+	if got := x509util.SerialHex(nil); got != "?" {
 		t.Errorf("nil cert: want ?, got %q", got)
 	}
-	if got := serialHex(&x509.Certificate{}); got != "?" {
+	if got := x509util.SerialHex(&x509.Certificate{}); got != "?" {
 		t.Errorf("nil serial: want ?, got %q", got)
 	}
-	if got := serialHex(&x509.Certificate{SerialNumber: big.NewInt(0)}); got != "00" {
+	if got := x509util.SerialHex(&x509.Certificate{SerialNumber: big.NewInt(0)}); got != "00" {
 		t.Errorf("zero serial: want 00, got %q", got)
 	}
-	if got := serialHex(&x509.Certificate{SerialNumber: big.NewInt(0xdeadbeef)}); got != "deadbeef" {
+	if got := x509util.SerialHex(&x509.Certificate{SerialNumber: big.NewInt(0xdeadbeef)}); got != "deadbeef" {
 		t.Errorf("0xdeadbeef serial: want deadbeef, got %q", got)
 	}
 	big1 := new(big.Int)
 	big1.SetString("1234567890abcdef", 16)
-	if got := serialHex(&x509.Certificate{SerialNumber: big1}); got != "1234567890abcdef" {
+	if got := x509util.SerialHex(&x509.Certificate{SerialNumber: big1}); got != "1234567890abcdef" {
 		t.Errorf("large serial: want 1234567890abcdef, got %q", got)
 	}
 }
@@ -132,20 +134,20 @@ func TestLooksLikeUnsupportedAlgoErr(t *testing.T) {
 		{errors.New("unsupported algorithm GOST"), true},
 	}
 	for _, c := range cases {
-		if got := looksLikeUnsupportedAlgoErr(c.err); got != c.want {
+		if got := x509util.LooksLikeUnsupportedAlgoErr(c.err); got != c.want {
 			t.Errorf("err=%v: want %v, got %v", c.err, c.want, got)
 		}
 	}
 }
 
 func TestLooksLikeInsecureAlgoErr(t *testing.T) {
-	if looksLikeInsecureAlgoErr(nil) {
+	if x509util.LooksLikeInsecureAlgoErr(nil) {
 		t.Error("nil err should be false")
 	}
-	if looksLikeInsecureAlgoErr(errors.New("connection refused")) {
+	if x509util.LooksLikeInsecureAlgoErr(errors.New("connection refused")) {
 		t.Error("non-matching err should be false")
 	}
-	if !looksLikeInsecureAlgoErr(errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")) {
+	if !x509util.LooksLikeInsecureAlgoErr(errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")) {
 		t.Error("matching err should be true")
 	}
 }
@@ -270,15 +272,15 @@ func TestHasAnyNameConstraints(t *testing.T) {
 // ============================================================================
 
 func TestIsSelfSigned(t *testing.T) {
-	if isSelfSigned(nil) {
+	if x509util.IsSelfSigned(nil) {
 		t.Error("nil cert: should be false")
 	}
 	root, key := selfSignedRoot(t, "Root")
-	if !isSelfSigned(root) {
+	if !x509util.IsSelfSigned(root) {
 		t.Error("self-signed root: should be true")
 	}
 	leaf, _ := issuedCert(t, "leaf", root, key)
-	if isSelfSigned(leaf) {
+	if x509util.IsSelfSigned(leaf) {
 		t.Error("issued leaf: should be false")
 	}
 }
@@ -292,21 +294,21 @@ func TestFindParentInListCert(t *testing.T) {
 	leaf, _ := issuedCert(t, "leaf", root, rootKey)
 	other, _ := selfSignedRoot(t, "Other")
 
-	if _, ok := findParentInListCert(nil, []*x509.Certificate{root}); ok {
+	if _, ok := x509util.FindParentInListCert(nil, []*x509.Certificate{root}); ok {
 		t.Error("nil child: expected not found")
 	}
-	if _, ok := findParentInListCert(leaf, nil); ok {
+	if _, ok := x509util.FindParentInListCert(leaf, nil); ok {
 		t.Error("nil pool: expected not found")
 	}
-	if _, ok := findParentInListCert(leaf, []*x509.Certificate{other}); ok {
+	if _, ok := x509util.FindParentInListCert(leaf, []*x509.Certificate{other}); ok {
 		t.Error("wrong parent: expected not found")
 	}
-	parent, ok := findParentInListCert(leaf, []*x509.Certificate{nil, other, root})
+	parent, ok := x509util.FindParentInListCert(leaf, []*x509.Certificate{nil, other, root})
 	if !ok {
 		t.Fatal("expected to find root as parent")
 	}
 	if parent != root {
-		t.Errorf("got wrong parent: %s", cnOrDN(parent))
+		t.Errorf("got wrong parent: %s", x509util.CnOrDN(parent))
 	}
 }
 
@@ -327,7 +329,7 @@ func TestParseRevocationListFromData(t *testing.T) {
 	}
 
 	// DER input
-	crl, err := parseRevocationListFromData(der)
+	crl, err := x509util.ParseRevocationListFromData(der)
 	if err != nil {
 		t.Fatalf("DER parse: %v", err)
 	}
@@ -337,7 +339,7 @@ func TestParseRevocationListFromData(t *testing.T) {
 
 	// PEM input
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der})
-	crl2, err := parseRevocationListFromData(pemBytes)
+	crl2, err := x509util.ParseRevocationListFromData(pemBytes)
 	if err != nil {
 		t.Fatalf("PEM parse: %v", err)
 	}
@@ -346,7 +348,7 @@ func TestParseRevocationListFromData(t *testing.T) {
 	}
 
 	// Garbage input
-	if _, err := parseRevocationListFromData([]byte("not a crl")); err == nil {
+	if _, err := x509util.ParseRevocationListFromData([]byte("not a crl")); err == nil {
 		t.Error("garbage: expected error")
 	}
 }
