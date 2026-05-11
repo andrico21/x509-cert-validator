@@ -1,3 +1,3 @@
 module github.com/andrico21/x509-cert-validator
 
-go 1.26.2
+go 1.26.3
