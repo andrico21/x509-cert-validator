@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
@@ -169,7 +170,7 @@ func TestHumanDuration(t *testing.T) {
 		{-30 * time.Second, "30s"}, // negative is normalized
 	}
 	for _, c := range cases {
-		if got := humanDuration(c.d); got != c.want {
+		if got := display.HumanDuration(c.d); got != c.want {
 			t.Errorf("d=%v: want %q, got %q", c.d, c.want, got)
 		}
 	}
@@ -180,13 +181,13 @@ func TestHumanDuration(t *testing.T) {
 // ============================================================================
 
 func TestTruncate(t *testing.T) {
-	if got := truncate("hello", 10); got != "hello" {
+	if got := display.Truncate("hello", 10); got != "hello" {
 		t.Errorf("short: want hello, got %q", got)
 	}
-	if got := truncate("hello", 5); got != "hello" {
+	if got := display.Truncate("hello", 5); got != "hello" {
 		t.Errorf("exact: want hello, got %q", got)
 	}
-	if got := truncate("hello world", 8); got != "hello..." {
+	if got := display.Truncate("hello world", 8); got != "hello..." {
 		t.Errorf("long: want hello..., got %q", got)
 	}
 }
@@ -196,15 +197,15 @@ func TestTruncate(t *testing.T) {
 // ============================================================================
 
 func TestIPNetListToStrings(t *testing.T) {
-	if got := ipNetListToStrings(nil); got != nil {
+	if got := display.IPNetListToStrings(nil); got != nil {
 		t.Errorf("nil: want nil, got %v", got)
 	}
-	if got := ipNetListToStrings([]*net.IPNet{}); got != nil {
+	if got := display.IPNetListToStrings([]*net.IPNet{}); got != nil {
 		t.Errorf("empty: want nil, got %v", got)
 	}
 	_, n1, _ := net.ParseCIDR("10.0.0.0/8")
 	_, n2, _ := net.ParseCIDR("192.168.1.0/24")
-	got := ipNetListToStrings([]*net.IPNet{n1, nil, n2})
+	got := display.IPNetListToStrings([]*net.IPNet{n1, nil, n2})
 	if len(got) != 2 {
 		t.Fatalf("expected 2 (nil filtered), got %d: %v", len(got), got)
 	}
@@ -218,13 +219,13 @@ func TestIPNetListToStrings(t *testing.T) {
 // ============================================================================
 
 func TestWrapList(t *testing.T) {
-	if got := wrapList("DNS", nil, 80); got != nil {
+	if got := display.WrapList("DNS", nil, 80); got != nil {
 		t.Errorf("nil items: want nil, got %v", got)
 	}
-	if got := wrapList("DNS", []string{}, 80); got != nil {
+	if got := display.WrapList("DNS", []string{}, 80); got != nil {
 		t.Errorf("empty items: want nil, got %v", got)
 	}
-	got := wrapList("DNS", []string{"a.example.com", "b.example.com"}, 80)
+	got := display.WrapList("DNS", []string{"a.example.com", "b.example.com"}, 80)
 	if len(got) != 1 {
 		t.Fatalf("short list should fit one line, got %d: %v", len(got), got)
 	}
@@ -232,7 +233,7 @@ func TestWrapList(t *testing.T) {
 		t.Errorf("expected prefix 'DNS: ', got %q", got[0])
 	}
 	// Force wrapping with very small width
-	got2 := wrapList("DNS", []string{"aaaa", "bbbb", "cccc"}, 12)
+	got2 := display.WrapList("DNS", []string{"aaaa", "bbbb", "cccc"}, 12)
 	if len(got2) < 2 {
 		t.Errorf("expected wrap into >=2 lines, got %d: %v", len(got2), got2)
 	}
@@ -243,10 +244,10 @@ func TestWrapList(t *testing.T) {
 // ============================================================================
 
 func TestHasAnyNameConstraints(t *testing.T) {
-	if hasAnyNameConstraints(nil) {
+	if display.HasAnyNameConstraints(nil) {
 		t.Error("nil cert should be false")
 	}
-	if hasAnyNameConstraints(&x509.Certificate{}) {
+	if display.HasAnyNameConstraints(&x509.Certificate{}) {
 		t.Error("empty cert should be false")
 	}
 	cases := []*x509.Certificate{
@@ -261,7 +262,7 @@ func TestHasAnyNameConstraints(t *testing.T) {
 		{ExcludedURIDomains: []string{"x"}},
 	}
 	for i, c := range cases {
-		if !hasAnyNameConstraints(c) {
+		if !display.HasAnyNameConstraints(c) {
 			t.Errorf("case %d: expected true", i)
 		}
 	}

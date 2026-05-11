@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
@@ -721,29 +722,6 @@ func flagUnsupportedIfNeeded(cert *x509.Certificate) {
 	}
 }
 
-func humanDuration(d time.Duration) string {
-	if d < 0 {
-		d = -d
-	}
-	days := int(d.Hours()) / 24
-	d -= time.Duration(days) * 24 * time.Hour
-	hours := int(d.Hours())
-	d -= time.Duration(hours) * time.Hour
-	minutes := int(d.Minutes())
-	d -= time.Duration(minutes) * time.Minute
-	seconds := int(d.Seconds())
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm %ds", days, hours, minutes, seconds)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
-	}
-	if minutes > 0 {
-		return fmt.Sprintf("%dm %ds", minutes, seconds)
-	}
-	return fmt.Sprintf("%ds", seconds)
-}
-
 func handleVerifyError(err error, certPath, rootPath, usage string) {
 	if x509util.LooksLikeUnsupportedAlgoErr(err) {
 		hasUnsupportedAlgo = true
@@ -814,11 +792,11 @@ func highlightLeafIssues(cert *x509.Certificate) {
 	if now.After(cert.NotAfter) {
 		logNormal("⚠️  WARNING: Certificate is EXPIRED (NotAfter: %s, %s ago).\n",
 			cert.NotAfter.Format(time.RFC3339),
-			humanDuration(now.Sub(cert.NotAfter)))
+			display.HumanDuration(now.Sub(cert.NotAfter)))
 	} else if now.Before(cert.NotBefore) {
 		logNormal("⚠️  WARNING: Certificate is NOT YET VALID (NotBefore: %s, starts in %s).\n",
 			cert.NotBefore.Format(time.RFC3339),
-			humanDuration(cert.NotBefore.Sub(now)))
+			display.HumanDuration(cert.NotBefore.Sub(now)))
 	} else {
 		remaining := cert.NotAfter.Sub(now)
 		totalLifetime := cert.NotAfter.Sub(cert.NotBefore)
@@ -832,7 +810,7 @@ func highlightLeafIssues(cert *x509.Certificate) {
 		}
 		if remaining < threshold {
 			logNormal("⚠️  NOTICE: Certificate expires soon (%s remaining, NotAfter: %s).\n",
-				humanDuration(remaining), cert.NotAfter.Format(time.RFC3339))
+				display.HumanDuration(remaining), cert.NotAfter.Format(time.RFC3339))
 		}
 	}
 
@@ -1468,12 +1446,12 @@ func printChainGraph(chain []*x509.Certificate) {
 	w := maxLen
 	border := "+" + strings.Repeat("-", w+2) + "+"
 	boxLine := func(s string) {
-		fmt.Printf("| %-*s |\n", w, truncate(s, w))
+		fmt.Printf("| %-*s |\n", w, display.Truncate(s, w))
 	}
 
 	fmt.Println()
 	for idx, info := range infos {
-		ncLines := buildNameConstraintLines(info.cert, w)
+		ncLines := display.BuildNameConstraintLines(info.cert, w)
 
 		fmt.Println(border)
 		boxLine(info.role)
@@ -1497,117 +1475,7 @@ func printChainGraph(chain []*x509.Certificate) {
 	fmt.Println()
 }
 
-func truncate(s string, length int) string {
-	if len(s) > length {
-		return s[:length-3] + "..."
-	}
-	return s
-}
-
 // --- Name Constraints ---
-
-func hasAnyNameConstraints(cert *x509.Certificate) bool {
-	if cert == nil {
-		return false
-	}
-	return cert.PermittedDNSDomainsCritical ||
-		len(cert.PermittedDNSDomains) > 0 ||
-		len(cert.ExcludedDNSDomains) > 0 ||
-		len(cert.PermittedIPRanges) > 0 ||
-		len(cert.ExcludedIPRanges) > 0 ||
-		len(cert.PermittedEmailAddresses) > 0 ||
-		len(cert.ExcludedEmailAddresses) > 0 ||
-		len(cert.PermittedURIDomains) > 0 ||
-		len(cert.ExcludedURIDomains) > 0
-}
-
-func ipNetListToStrings(nets []*net.IPNet) []string {
-	if len(nets) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(nets))
-	for _, n := range nets {
-		if n == nil {
-			continue
-		}
-		out = append(out, n.String())
-	}
-	return out
-}
-
-// Wraps a list into multiple lines within a fixed width.
-// First line starts with "Label: ", continuation lines align under it.
-func wrapList(label string, items []string, width int) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	prefix := label + ": "
-	contPrefix := strings.Repeat(" ", len(prefix))
-
-	var lines []string
-	cur := prefix
-
-	for _, it := range items {
-		if it == "" {
-			continue
-		}
-
-		sep := ""
-		if cur != prefix && cur != contPrefix {
-			sep = ", "
-		}
-
-		token := sep + it
-		if len(cur)+len(token) <= width {
-			cur += token
-			continue
-		}
-
-		lines = append(lines, truncate(cur, width))
-
-		cur = contPrefix + it
-		if len(cur) > width {
-			lines = append(lines, truncate(cur, width))
-			cur = contPrefix
-		}
-	}
-
-	if strings.TrimSpace(cur) != "" && cur != contPrefix {
-		lines = append(lines, truncate(cur, width))
-	}
-	return lines
-}
-
-func buildNameConstraintLines(cert *x509.Certificate, width int) []string {
-	if cert == nil {
-		return []string{"NC: unknown"}
-	}
-	if !hasAnyNameConstraints(cert) {
-		return []string{"NC: no"}
-	}
-
-	crit := ""
-	if cert.PermittedDNSDomainsCritical {
-		crit = " (critical)"
-	}
-
-	var out []string
-	out = append(out, "NC: yes"+crit)
-
-	out = append(out, wrapList("PermDNS", cert.PermittedDNSDomains, width)...)
-	out = append(out, wrapList("ExclDNS", cert.ExcludedDNSDomains, width)...)
-
-	out = append(out, wrapList("PermIP", ipNetListToStrings(cert.PermittedIPRanges), width)...)
-	out = append(out, wrapList("ExclIP", ipNetListToStrings(cert.ExcludedIPRanges), width)...)
-
-	out = append(out, wrapList("PermEmail", cert.PermittedEmailAddresses, width)...)
-	out = append(out, wrapList("ExclEmail", cert.ExcludedEmailAddresses, width)...)
-
-	out = append(out, wrapList("PermURI", cert.PermittedURIDomains, width)...)
-	out = append(out, wrapList("ExclURI", cert.ExcludedURIDomains, width)...)
-
-	return out
-}
 
 func printNameConstraints(prefix string, cert *x509.Certificate) {
 	if verbosity != LevelNormal {
@@ -1616,7 +1484,7 @@ func printNameConstraints(prefix string, cert *x509.Certificate) {
 	if cert == nil {
 		return
 	}
-	if !hasAnyNameConstraints(cert) {
+	if !display.HasAnyNameConstraints(cert) {
 		return
 	}
 
@@ -1635,10 +1503,10 @@ func printNameConstraints(prefix string, cert *x509.Certificate) {
 	}
 
 	if len(cert.PermittedIPRanges) > 0 {
-		logNormal("%s      Permitted IP:    %v\n", prefix, ipNetListToStrings(cert.PermittedIPRanges))
+		logNormal("%s      Permitted IP:    %v\n", prefix, display.IPNetListToStrings(cert.PermittedIPRanges))
 	}
 	if len(cert.ExcludedIPRanges) > 0 {
-		logNormal("%s      Excluded IP:     %v\n", prefix, ipNetListToStrings(cert.ExcludedIPRanges))
+		logNormal("%s      Excluded IP:     %v\n", prefix, display.IPNetListToStrings(cert.ExcludedIPRanges))
 	}
 
 	if len(cert.PermittedEmailAddresses) > 0 {
