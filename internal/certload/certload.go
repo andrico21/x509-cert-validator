@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/andrico21/x509-cert-validator/internal/errs"
 )
@@ -20,6 +21,13 @@ import (
 // internally so that exceeding the cap is reliably detected and reported
 // as an error rather than silently truncated.
 func ReadWithLimit(r io.Reader, limit int64) ([]byte, error) {
+	// Guard the limit+1 below against integer overflow for pathological
+	// flag values (e.g. -max-local 9223372036854775807): a wrapped
+	// negative LimitReader count would read zero bytes and surface a
+	// confusing "no certificates found" error.
+	if limit > math.MaxInt64-1 {
+		limit = math.MaxInt64 - 1
+	}
 	// Read up to limit+1 so we can reliably detect truncation.
 	data, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
