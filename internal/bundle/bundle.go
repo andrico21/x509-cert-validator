@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"os"
+	"path/filepath"
 
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
@@ -75,20 +76,20 @@ func FromDiscovered(inters []*x509.Certificate, roots []*x509.Certificate, inclu
 	return out
 }
 
-// WritePEM atomically writes a deduplicated PEM bundle to path. Writes
-// go to a sibling .tmp file that is renamed on success and removed on
-// any failure (named-return + deferred cleanup), so callers never see
-// stale partial output. Returns the count of certificates written and
-// the subset of those that were self-signed (roots).
+// WritePEM atomically writes a deduplicated PEM bundle to path. Writes go
+// to a randomly named temp file in the same directory (so the final
+// os.Rename stays on one volume and cannot clobber an unrelated
+// pre-existing "<path>.tmp" file); the temp file is renamed on success and
+// removed on any failure (named-return + deferred cleanup), so callers
+// never see stale partial output. Returns the count of certificates
+// written and the subset of those that were self-signed (roots).
 func WritePEM(path string, certs []*x509.Certificate) (written int, rootsWritten int, err error) {
-	tmpPath := path + ".tmp"
-	// M-4: explicit perms (0644) and named-return + deferred cleanup so we never
-	// leave a stale .tmp file behind on partial failure.
-	// #nosec G302 G304 -- bundle is a public PEM artifact (CA certificates); 0o644 is the intentional, documented file mode for distribution. Path is user-supplied by design (-create-ca-bundle <path>).
-	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// #nosec G304 -- the output path is user-supplied by design (-create-ca-bundle <path>).
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return 0, 0, err
 	}
+	tmpPath := f.Name()
 	committed := false
 	defer func() {
 		// Close (idempotent: ignore second-close errors via _ )
@@ -97,6 +98,13 @@ func WritePEM(path string, certs []*x509.Certificate) (written int, rootsWritten
 			_ = os.Remove(tmpPath)
 		}
 	}()
+
+	// os.CreateTemp opens 0600; the bundle is a public PEM artifact (CA
+	// certificates), so restore the documented 0644 distribution mode.
+	// #nosec G302 -- intentional, documented file mode.
+	if err = f.Chmod(0o644); err != nil {
+		return 0, 0, err
+	}
 
 	seen := make(map[string]bool)
 	for _, c := range certs {
