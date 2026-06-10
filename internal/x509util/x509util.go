@@ -90,21 +90,26 @@ func FindParentInListCert(child *x509.Certificate, pool []*x509.Certificate) (*x
 	return nil, false
 }
 
-// IsSelfSigned reports whether cert is self-signed (signature verifies under
-// its own public key AND issuer DN matches subject DN).
+// IsSelfSigned reports whether cert is self-signed: issuer DN matches
+// subject DN AND the signature verifies under the certificate's own public
+// key. The check is topological, not policy-gated: it deliberately uses
+// CheckSignature (raw signature math) instead of CheckSignatureFrom, which
+// would reject self-signed non-CA certificates (missing CA basic
+// constraint / KeyUsageCertSign) and SHA1-signed certificates (insecure-
+// algorithm policy) even though they ARE self-signed. Diagnostic labels
+// and hints rely on the topological answer.
 func IsSelfSigned(cert *x509.Certificate) bool {
 	if cert == nil {
 		return false
 	}
-	if cert.CheckSignatureFrom(cert) != nil {
+	// Fast path: DER-equal issuer/subject; fallback covers rare DER
+	// encoding differences between otherwise-identical DNs.
+	nameMatch := bytes.Equal(cert.RawIssuer, cert.RawSubject) ||
+		cert.Issuer.String() == cert.Subject.String()
+	if !nameMatch {
 		return false
 	}
-	// Fast path
-	if bytes.Equal(cert.RawIssuer, cert.RawSubject) {
-		return true
-	}
-	// Fallback for rare DER encoding differences
-	return cert.Issuer.String() == cert.Subject.String()
+	return cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature) == nil
 }
 
 // CertPublicKeySummary returns a short human-readable description of a
