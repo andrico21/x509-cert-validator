@@ -13,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // HumanDuration renders a time.Duration as a coarse, human-friendly string
@@ -41,14 +42,73 @@ func HumanDuration(d time.Duration) string {
 	return fmt.Sprintf("%ds", seconds)
 }
 
-// Truncate returns s shortened to length characters, replacing the tail
-// with "..." when truncation occurs. Inputs already within length are
-// returned unchanged.
+// Truncate returns s shortened to at most length bytes, replacing the tail
+// with "..." when truncation occurs. Cuts happen only at rune boundaries so
+// multibyte characters are never split. For length <= 3 the result is a
+// plain rune-safe prefix without an ellipsis (never panics, unlike the
+// previous implementation). Inputs already within length are returned
+// unchanged.
 func Truncate(s string, length int) string {
-	if len(s) > length {
-		return s[:length-3] + "..."
+	if len(s) <= length {
+		return s
 	}
-	return s
+	if length <= 0 {
+		return ""
+	}
+	if length <= 3 {
+		return truncToRuneBoundary(s, length)
+	}
+	return truncToRuneBoundary(s, length-3) + "..."
+}
+
+// truncToRuneBoundary returns the longest prefix of s that is at most n
+// bytes long and does not split a multibyte rune.
+func truncToRuneBoundary(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// SanitizeTerminal replaces C0 control characters (except '\n', '\r' and
+// '\t') and DEL (0x7F) with U+FFFD so untrusted certificate fields (CNs,
+// DNs, SANs, URLs) cannot inject terminal escape sequences (e.g. ANSI
+// color/title/clipboard codes) into diagnostic output. Printable text,
+// including emoji and non-ASCII names, passes through unchanged.
+func SanitizeTerminal(s string) string {
+	// Fast path: control characters are single-byte in UTF-8, so a byte
+	// scan is exact and avoids allocation for clean strings.
+	dirty := false
+	for i := 0; i < len(s); i++ {
+		if isDisallowedControl(s[i]) {
+			dirty = true
+			break
+		}
+	}
+	if !dirty {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if isDisallowedControl(b) {
+			sb.WriteRune('\uFFFD')
+			continue
+		}
+		sb.WriteByte(b)
+	}
+	return sb.String()
+}
+
+func isDisallowedControl(b byte) bool {
+	if b == '\n' || b == '\r' || b == '\t' {
+		return false
+	}
+	return b < 0x20 || b == 0x7F
 }
 
 // HasAnyNameConstraints reports whether cert declares any RFC 5280 §4.2.1.10
