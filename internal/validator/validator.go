@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/andrico21/x509-cert-validator/internal/display"
 )
 
 // Verbosity selects the user-facing output level for a validation run.
@@ -71,6 +73,9 @@ func NewStderrLogger(level Verbosity) *StderrLogger {
 
 // Normal implements Logger.Normal. Output is discarded unless verbosity
 // is LevelNormal, matching the original main-package logNormal helper.
+// The formatted output passes through display.SanitizeTerminal so
+// untrusted certificate fields logged by subpackages (aia, crl) cannot
+// inject terminal escape sequences.
 func (l *StderrLogger) Normal(format string, args ...any) {
 	if l.Level != LevelNormal {
 		return
@@ -79,7 +84,7 @@ func (l *StderrLogger) Normal(format string, args ...any) {
 	if w == nil {
 		w = os.Stdout
 	}
-	fmt.Fprintf(w, format, args...)
+	fmt.Fprint(w, display.SanitizeTerminal(fmt.Sprintf(format, args...)))
 }
 
 // Verbosity implements Logger.Verbosity.
