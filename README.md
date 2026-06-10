@@ -15,19 +15,19 @@ AI-assisted written code, however it's well-tested.
 # Development
 go build -o ./x509-cert-validator ./cmd/x509-cert-validator
 
-# Production (v1.2.0)
+# Production (v1.2.1)
 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.2.0" \
+  -ldflags="-s -w -X main.version=1.2.1" \
   -o ./x509-cert-validator ./cmd/x509-cert-validator
 
 # Production + FIPS
 GOEXPERIMENT=boringcrypto go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.2.0" \
+  -ldflags="-s -w -X main.version=1.2.1" \
   -o ./x509-cert-validator ./cmd/x509-cert-validator
 
 # Cross-compile (e.g. Linux ARM64)
 GOOS=linux GOARCH=arm64 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.2.0" \
+  -ldflags="-s -w -X main.version=1.2.1" \
   -o ./x509-cert-validator-linux-arm64 ./cmd/x509-cert-validator
 ```
 
