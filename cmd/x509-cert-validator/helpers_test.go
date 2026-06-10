@@ -417,6 +417,79 @@ func TestBuildBundleFromDiscovered(t *testing.T) {
 // -maxaia, -maxcrl, -maxlocal, -maxcert).
 
 // ============================================================================
+// verifyFailureHint (Fix 2: hint ordering / diagnostic mask)
+// ============================================================================
+
+func hintText(lines []string) string { return strings.Join(lines, "") }
+
+func TestVerifyFailureHintHostnameBeatsAlgoFlags(t *testing.T) {
+	// Regression: an unrelated unsupported-algo cert seen during loading
+	// must NOT mask a hostname-mismatch failure.
+	err := errors.New("x509: certificate is valid for 137 names, but none matched google.ru")
+	got := hintText(verifyFailureHint(err, nil, true /* hasUnsupported */, true /* hasInsecure */, "leaf.pem", "", "any"))
+	if !strings.Contains(got, "Hostname mismatch") {
+		t.Errorf("want hostname tip, got: %q", got)
+	}
+	if strings.Contains(got, "CRITICAL HINT") {
+		t.Errorf("algo hint must not fire on hostname mismatch, got: %q", got)
+	}
+}
+
+func TestVerifyFailureHintKeyUsageBeatsAlgoFlags(t *testing.T) {
+	err := errors.New("x509: certificate specifies an incompatible key usage")
+	got := hintText(verifyFailureHint(err, nil, true, false, "leaf.pem", "", "server"))
+	if !strings.Contains(got, "requested type: server") {
+		t.Errorf("want key-usage tip, got: %q", got)
+	}
+	if strings.Contains(got, "CRITICAL HINT") {
+		t.Errorf("algo hint must not fire on key-usage error, got: %q", got)
+	}
+}
+
+func TestVerifyFailureHintUnsupportedAlgoOnGenericError(t *testing.T) {
+	// GOST-intermediate case: verify fails generically ("unknown
+	// authority") while loading flagged an unsupported algorithm — the
+	// algo hint must still fire (before the authority tip).
+	err := errors.New("x509: certificate signed by unknown authority")
+	got := hintText(verifyFailureHint(err, nil, true, false, "leaf.pem", "root.pem", "any"))
+	if !strings.Contains(got, "unsupported algorithm/curve") {
+		t.Errorf("want unsupported-algo hint, got: %q", got)
+	}
+	if !strings.Contains(got, "-CAfile root.pem") {
+		t.Errorf("want -CAfile variant when rootPath set, got: %q", got)
+	}
+}
+
+func TestVerifyFailureHintInsecureAlgo(t *testing.T) {
+	root, _ := selfSignedRoot(t, "Leaf For Hint")
+	err := errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")
+	got := hintText(verifyFailureHint(err, root, false, false, "leaf.pem", "", "any"))
+	if !strings.Contains(got, "insecure signature algorithm policy") {
+		t.Errorf("want insecure-algo hint, got: %q", got)
+	}
+	if !strings.Contains(got, "Leaf Signature Algorithm:") {
+		t.Errorf("want leaf details when leaf provided, got: %q", got)
+	}
+}
+
+func TestVerifyFailureHintAuthoritySelfSigned(t *testing.T) {
+	root, _ := selfSignedRoot(t, "Self Signed")
+	err := errors.New("x509: certificate signed by unknown authority")
+	got := hintText(verifyFailureHint(err, root, false, false, "leaf.pem", "", "any"))
+	if !strings.Contains(got, "self-signed") {
+		t.Errorf("want self-signed tip, got: %q", got)
+	}
+}
+
+func TestVerifyFailureHintAuthorityNotSelfSigned(t *testing.T) {
+	err := errors.New("x509: certificate signed by unknown authority")
+	got := hintText(verifyFailureHint(err, nil, false, false, "leaf.pem", "", "any"))
+	if !strings.Contains(got, "-aia") {
+		t.Errorf("want intermediates tip, got: %q", got)
+	}
+}
+
+// ============================================================================
 // Compile-time checks
 // ============================================================================
 

@@ -17,9 +17,11 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"time"
 )
@@ -80,15 +82,14 @@ type Config struct {
 
 // ParseError is returned by Parse for any user-facing failure
 // (unknown flag, bad -at value, non-positive size limit, unknown -type,
-// etc.). The Message field is operator-facing; the ExitCode mirrors
-// the legacy behavior (1 for usage errors, 2 for flag-parse errors so
-// stdlib's flag.ErrHelp surfaces distinctly).
+// etc.) and for -h/--help. The Message field is operator-facing and may
+// be empty (help requested: usage was already rendered, nothing to add);
+// ExitCode mirrors conventional CLI behavior: 0 for -h (stdlib
+// flag.ErrHelp convention), 1 for value-validation errors, 2 for
+// flag-parse errors.
 type ParseError struct {
 	Message  string
 	ExitCode int
-	// PrintUsage instructs the caller to print usage before exiting.
-	// True for -h / unknown flags, false for value-validation errors.
-	PrintUsage bool
 }
 
 func (e *ParseError) Error() string { return e.Message }
@@ -144,10 +145,17 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	})
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// -h/--help: the fs.Usage closure already rendered the full
+			// usage text to usageOut. Exit 0 per stdlib convention, with
+			// no extra noise ("flag: help requested") on stderr.
+			return nil, &ParseError{Message: "", ExitCode: 0}
+		}
+		// Unknown flag / bad value: flag pkg already invoked fs.Usage too;
+		// surface the error message with the conventional exit code 2.
 		return nil, &ParseError{
-			Message:    err.Error(),
-			ExitCode:   2,
-			PrintUsage: true,
+			Message:  err.Error(),
+			ExitCode: 2,
 		}
 	}
 
@@ -217,20 +225,20 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	return cfg, nil
 }
 
-// normalizeSNI trims surrounding whitespace and drops any :port suffix
-// so callers can pass it directly as the TLS ServerName.
+// normalizeSNI trims surrounding whitespace and drops any :port suffix so
+// callers can pass the result directly as the TLS ServerName. Uses
+// net.SplitHostPort so IPv6 forms work: "[::1]:443" yields "::1" and a
+// bare IPv6 literal such as "::1" is returned unchanged (the previous
+// manual last-colon split mangled it into ":"). Anything SplitHostPort
+// cannot parse is returned as-is. Note crypto/tls omits SNI entirely for
+// IP-literal ServerNames per RFC 6066, so IP inputs are diagnostic-only.
 func normalizeSNI(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" || !strings.Contains(s, ":") {
 		return s
 	}
-	// Manual host:port split (avoids importing net for one call).
-	if i := strings.LastIndex(s, ":"); i > 0 {
-		// Reject IPv6 literals containing colons (e.g. "[::1]:443" stays as-is for now).
-		if strings.HasPrefix(s, "[") {
-			return s
-		}
-		return s[:i]
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return host
 	}
 	return s
 }

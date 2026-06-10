@@ -217,3 +217,74 @@ func TestParseRejectsBadAtTime(t *testing.T) {
 		t.Errorf("expected *ParseError, got %T: %v", err, err)
 	}
 }
+
+// ============================================================================
+// Parse - help / unknown flag exit codes (Fixes 7+8)
+// ============================================================================
+
+func TestParseHelpExitsZero(t *testing.T) {
+	var buf strings.Builder
+	_, err := Parse([]string{"-h"}, "test", &buf)
+	if err == nil {
+		t.Fatal("expected *ParseError signal for -h")
+	}
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.ExitCode != 0 {
+		t.Errorf("-h ExitCode: want 0 (stdlib ErrHelp convention), got %d", pe.ExitCode)
+	}
+	if pe.Message != "" {
+		t.Errorf("-h Message: want empty (no 'flag: help requested' noise), got %q", pe.Message)
+	}
+	if !strings.Contains(buf.String(), "Usage of") {
+		t.Errorf("usage text not rendered to writer, got:\n%s", buf.String())
+	}
+}
+
+func TestParseUnknownFlagExitsTwo(t *testing.T) {
+	var buf strings.Builder
+	_, err := Parse([]string{"-bogus"}, "test", &buf)
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.ExitCode != 2 {
+		t.Errorf("unknown flag ExitCode: want 2, got %d", pe.ExitCode)
+	}
+	if !strings.Contains(pe.Message, "bogus") {
+		t.Errorf("Message should mention the offending flag, got %q", pe.Message)
+	}
+	if !strings.Contains(buf.String(), "Usage of") {
+		t.Errorf("usage text not rendered to writer on unknown flag, got:\n%s", buf.String())
+	}
+}
+
+// ============================================================================
+// normalizeSNI (IPv6 handling)
+// ============================================================================
+
+func TestNormalizeSNI(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"example.com", "example.com"},
+		{"example.com:443", "example.com"},
+		{"  host:8443  ", "host"},
+		{"[::1]:443", "::1"},                 // bracketed IPv6 with port: host extracted
+		{"::1", "::1"},                       // bare IPv6: previously mangled to ":"
+		{"host:notaport", "host"},            // SplitHostPort does not validate port digits
+		{"host:443:extra", "host:443:extra"}, // unparseable: left untouched
+	}
+	for _, c := range cases {
+		if got := normalizeSNI(c.in); got != c.want {
+			t.Errorf("normalizeSNI(%q): want %q, got %q", c.in, c.want, got)
+		}
+	}
+}

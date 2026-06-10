@@ -88,12 +88,9 @@ func main() {
 	if err != nil {
 		var perr *cli.ParseError
 		if errors.As(err, &perr) {
-			if perr.PrintUsage {
-				// fs.Usage was already invoked by flag.ContinueOnError on bad
-				// flags? No: ContinueOnError suppresses Usage; we trigger it
-				// manually here so behavior matches the legacy ExitOnError path.
-				fmt.Fprintln(os.Stderr, perr.Message)
-			} else {
+			// Usage (when applicable) was already rendered by cli.Parse's
+			// fs.Usage closure. Message is empty for -h (exit 0).
+			if perr.Message != "" {
 				fmt.Fprintln(os.Stderr, perr.Message)
 			}
 			os.Exit(perr.ExitCode)
@@ -267,7 +264,7 @@ func main() {
 	}
 
 	printCertDetails("Target Certificate", leaf)
-	highlightLeafIssues(leaf)
+	highlightLeafIssues(leaf, currentTime)
 
 	// --- 6. AIA Fetching (Auto-Discovery, walk upward even if parent already known locally) ---
 	if *enableAIA {
@@ -485,6 +482,62 @@ func flagUnsupportedIfNeeded(cert *x509.Certificate) {
 	}
 }
 
+// verifyFailureHint returns the operator-facing hint lines (each ending in
+// "\n") for a chain-verification failure. Ordering is deliberate: specific
+// error content (hostname mismatch, key usage) takes precedence over the
+// run-global algorithm flags so that an unrelated unsupported-algo cert
+// observed during loading cannot mask the real cause. Algorithm hints
+// still fire for generic errors (e.g. "unknown authority" caused by a
+// GOST intermediate Go could not use) via the hasUnsupported/hasInsecure
+// fallbacks.
+func verifyFailureHint(err error, leaf *x509.Certificate, hasUnsupported, hasInsecure bool, certPath, rootPath, usage string) []string {
+	var lines []string
+	add := func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+	msg := err.Error()
+
+	switch {
+	case strings.Contains(msg, "x509") && strings.Contains(msg, "valid for"):
+		add("  (Tip: Hostname mismatch; use -dns or -sni appropriately)\n")
+
+	case strings.Contains(msg, "KeyUsage") || strings.Contains(msg, "key usage"):
+		add("  (Tip: Check if the certificate is valid for the requested type: %s)\n", usage)
+
+	case errs.LooksLikeUnsupportedAlgoErr(err) || hasUnsupported:
+		add("\n⚠️  CRITICAL HINT: Go rejected this chain because it contains an unsupported algorithm/curve (e.g., GOST or unsupported EC curve).\n")
+		add("   Please try verifying with OpenSSL directly:\n")
+		add("   $ openssl x509 -in %s -noout -text\n", certPath)
+		if rootPath != "" {
+			add("   $ openssl verify -CAfile %s %s\n\n", rootPath, certPath)
+		} else {
+			add("   $ openssl verify %s\n\n", certPath)
+		}
+
+	case errs.LooksLikeInsecureAlgoErr(err) || hasInsecure:
+		add("\n⚠️  CRITICAL HINT: Go refused to verify due to an insecure signature algorithm policy (e.g., SHA1/MD5).\n")
+		if leaf != nil {
+			add("   Leaf Signature Algorithm: %s\n", leaf.SignatureAlgorithm)
+			add("   Leaf Public Key: %s\n", x509util.CertPublicKeySummary(leaf))
+		}
+		add("   Verify with OpenSSL to confirm the chain, then re-issue with a modern hash (SHA-256+):\n")
+		add("   $ openssl x509 -in %s -noout -text\n", certPath)
+		if rootPath != "" {
+			add("   $ openssl verify -CAfile %s %s\n\n", rootPath, certPath)
+		} else {
+			add("   $ openssl verify %s\n\n", certPath)
+		}
+
+	case strings.Contains(msg, "authority"):
+		if x509util.IsSelfSigned(leaf) {
+			add("  (Tip: Certificate is self-signed and not in the system trust store. Use -root to trust it explicitly.)\n")
+		} else {
+			add("  (Tip: Ensure intermediates are provided or use -aia)\n")
+		}
+	}
+	return lines
+}
+
 func handleVerifyError(err error, certPath, rootPath, usage string) {
 	if errs.LooksLikeUnsupportedAlgoErr(err) {
 		hasUnsupportedAlgo = true
@@ -493,44 +546,17 @@ func handleVerifyError(err error, certPath, rootPath, usage string) {
 		hasInsecureAlgo = true
 	}
 
-	if hasUnsupportedAlgo {
-		logNormal("\n⚠️  CRITICAL HINT: Go rejected this chain because it contains an unsupported algorithm/curve (e.g., GOST or unsupported EC curve).\n")
-		logNormal("   Please try verifying with OpenSSL directly:\n")
-		logNormal("   $ openssl x509 -in %s -noout -text\n", certPath)
-		if rootPath != "" {
-			logNormal("   $ openssl verify -CAfile %s %s\n\n", rootPath, certPath)
-		} else {
-			logNormal("   $ openssl verify %s\n\n", certPath)
-		}
-	} else if hasInsecureAlgo {
-		logNormal("\n⚠️  CRITICAL HINT: Go refused to verify due to an insecure signature algorithm policy (e.g., SHA1/MD5).\n")
-		if targetLeaf != nil {
-			logNormal("   Leaf Signature Algorithm: %s\n", targetLeaf.SignatureAlgorithm)
-			logNormal("   Leaf Public Key: %s\n", x509util.CertPublicKeySummary(targetLeaf))
-		}
-		logNormal("   Verify with OpenSSL to confirm the chain, then re-issue with a modern hash (SHA-256+):\n")
-		logNormal("   $ openssl x509 -in %s -noout -text\n", certPath)
-		if rootPath != "" {
-			logNormal("   $ openssl verify -CAfile %s %s\n\n", rootPath, certPath)
-		} else {
-			logNormal("   $ openssl verify %s\n\n", certPath)
-		}
-	} else if strings.Contains(err.Error(), "authority") {
-		if targetLeaf != nil && x509util.IsSelfSigned(targetLeaf) {
-			logNormal("  (Tip: Certificate is self-signed and not in the system trust store. Use -root to trust it explicitly.)\n")
-		} else {
-			logNormal("  (Tip: Ensure intermediates are provided or use -aia)\n")
-		}
-	} else if strings.Contains(err.Error(), "KeyUsage") || strings.Contains(err.Error(), "key usage") {
-		logNormal("  (Tip: Check if the certificate is valid for the requested type: %s)\n", usage)
-	} else if strings.Contains(err.Error(), "x509") && strings.Contains(err.Error(), "valid for") {
-		logNormal("  (Tip: Hostname mismatch; use -dns or -sni appropriately)\n")
+	for _, line := range verifyFailureHint(err, targetLeaf, hasUnsupportedAlgo, hasInsecureAlgo, certPath, rootPath, usage) {
+		logNormal("%s", line)
 	}
 
 	exitErr(fmt.Errorf("VALIDATION FAILED: %v", err))
 }
 
-func highlightLeafIssues(cert *x509.Certificate) {
+// highlightLeafIssues prints heuristic warnings about the leaf. now is the
+// effective validation time (honors -at) so heuristics and x509.Verify
+// agree on what "expired" means within a single run.
+func highlightLeafIssues(cert *x509.Certificate, now time.Time) {
 	logNormal("\n=== Heuristic Analysis ===\n")
 
 	// Always show key type/size here (requested).
@@ -551,7 +577,6 @@ func highlightLeafIssues(cert *x509.Certificate) {
 		logNormal("⚠️  WARNING: Weak signature algorithm: %v\n", cert.SignatureAlgorithm)
 	}
 
-	now := time.Now()
 	if now.After(cert.NotAfter) {
 		logNormal("⚠️  WARNING: Certificate is EXPIRED (NotAfter: %s, %s ago).\n",
 			cert.NotAfter.Format(time.RFC3339),
@@ -637,9 +662,12 @@ func readWithLimit(r io.Reader, limit int64) ([]byte, error) {
 	return certload.ReadWithLimit(r, limit)
 }
 
+// logNormal prints normal-verbosity diagnostics. The formatted output is
+// passed through display.SanitizeTerminal so untrusted certificate fields
+// (CNs, DNs, SANs, URLs) cannot inject terminal escape sequences.
 func logNormal(format string, args ...any) {
 	if verbosity == LevelNormal {
-		fmt.Printf(format, args...)
+		fmt.Print(display.SanitizeTerminal(fmt.Sprintf(format, args...)))
 	}
 }
 
@@ -657,10 +685,10 @@ func exitErr(err error) {
 			}
 			sn = x509util.SerialHex(targetLeaf)
 		}
-		fmt.Fprintf(os.Stderr, "FAIL [%s] Serial:%s : %v\n", id, sn, err)
+		fmt.Fprint(os.Stderr, display.SanitizeTerminal(fmt.Sprintf("FAIL [%s] Serial:%s : %v\n", id, sn, err)))
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "❌ ERROR: %v\n", err)
+	fmt.Fprint(os.Stderr, display.SanitizeTerminal(fmt.Sprintf("❌ ERROR: %v\n", err)))
 	os.Exit(1)
 }
 
@@ -678,7 +706,7 @@ func exitSuccess() {
 			}
 			sn = x509util.SerialHex(targetLeaf)
 		}
-		fmt.Printf("PASS [%s] Serial:%s\n", id, sn)
+		fmt.Print(display.SanitizeTerminal(fmt.Sprintf("PASS [%s] Serial:%s\n", id, sn)))
 		os.Exit(0)
 	}
 	os.Exit(0)
@@ -874,7 +902,9 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
 // --- Graph view (updated to show full Name Constraints details) ---
 
 func printChainGraph(chain []*x509.Certificate) {
-	if verbosity == LevelUltraSilent {
+	// Graph output is normal-verbosity diagnostics; -silent promises
+	// "only pass/fail status" and -ultra-silent promises nothing at all.
+	if verbosity != LevelNormal {
 		return
 	}
 
@@ -929,7 +959,8 @@ func printChainGraph(chain []*x509.Certificate) {
 	w := maxLen
 	border := "+" + strings.Repeat("-", w+2) + "+"
 	boxLine := func(s string) {
-		fmt.Printf("| %-*s |\n", w, display.Truncate(s, w))
+		// Sanitize: box content embeds untrusted cert fields (CN/serial).
+		fmt.Print(display.SanitizeTerminal(fmt.Sprintf("| %-*s |\n", w, display.Truncate(s, w))))
 	}
 
 	fmt.Println()
