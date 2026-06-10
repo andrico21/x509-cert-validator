@@ -15,8 +15,11 @@
 //     VALID CRL or the pair is treated as a hard failure for -crl.
 //   - Multiple responding CRLs: if ANY indicates revoked => fail.
 //   - Missing ThisUpdate/NextUpdate => warning AND treated as invalid.
-//   - Parent must carry KeyUsageCRLSign or the level is skipped with a
-//     warning (no failure).
+//   - Parent whose KeyUsage extension lacks cRLSign while the child
+//     declares CDPs => hard failure for -crl (strict mode must not pass
+//     silently). A parent without any KeyUsage extension is treated as
+//     CRL-sign capable per RFC 5280 §4.2.1.3 (absent extension = key valid
+//     for all usages; common on legacy roots).
 //   - H-2: CRL Issuer DN must match parent CA Subject DN before the
 //     signature check; mismatch is logged and treated as invalid.
 //   - M-2: non-http(s) CDP URLs are surfaced as warnings and skipped.
@@ -30,6 +33,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -41,6 +45,11 @@ import (
 	"github.com/andrico21/x509-cert-validator/internal/validator"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
+
+// oidKeyUsage is the X.509 KeyUsage extension OID (2.5.29.15). Needed to
+// distinguish "extension absent" from "extension present with no usable
+// bits": Go parses both as KeyUsage == 0.
+var oidKeyUsage = asn1.ObjectIdentifier{2, 5, 29, 15}
 
 // DefaultPerFetchTimeout is applied to each individual CRL HTTP request
 // when Checker.PerFetchTimeout is zero.
@@ -101,15 +110,25 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 			child := chain[i]
 			parent := chain[i+1]
 
-			// Ensure Parent can Sign CRLs
-			if (parent.KeyUsage & x509.KeyUsageCRLSign) == 0 {
-				c.log("⚠️  WARNING: Issuer '%s' does not have CRLSign usage. Skipping CRL check for this level.\n", x509util.CnOrDN(parent))
-				continue
-			}
-
 			if len(child.CRLDistributionPoints) == 0 {
 				c.log("ℹ️  Skipping %s (No CDP defined)\n", x509util.CnOrDN(child))
 				continue
+			}
+
+			// The child declares CDPs, so -crl strict mode MUST be able to
+			// verify a CRL signature at this level. A parent whose KeyUsage
+			// extension omits cRLSign cannot sign CRLs => hard failure
+			// (the old behavior skipped with a warning and then reported
+			// "CRL CHECK PASSED", silently weakening strict mode). Per
+			// RFC 5280 §4.2.1.3 an ABSENT KeyUsage extension means the key
+			// is valid for all usages, so legacy parents without the
+			// extension proceed normally.
+			if parent.KeyUsage&x509.KeyUsageCRLSign == 0 {
+				if hasKeyUsageExtension(parent) {
+					return res, fmt.Errorf("issuer '%s' has a KeyUsage extension without cRLSign; cannot verify revocation status of '%s' declared via CRLDistributionPoints",
+						x509util.CnOrDN(parent), x509util.CnOrDN(child))
+				}
+				c.log("ℹ️  Issuer '%s' has no KeyUsage extension; treating as CRL-sign capable (RFC 5280 §4.2.1.3).\n", x509util.CnOrDN(parent))
 			}
 
 			// Pair dedupe (prevents duplicate checks across multiple verified chain paths)
@@ -247,6 +266,17 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 		}
 	}
 	return res, nil
+}
+
+// hasKeyUsageExtension reports whether cert carries the X.509 KeyUsage
+// extension (OID 2.5.29.15) at all, regardless of which bits are set.
+func hasKeyUsageExtension(cert *x509.Certificate) bool {
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(oidKeyUsage) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Checker) log(format string, args ...any) {
