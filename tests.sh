@@ -827,7 +827,7 @@ BUNDLE_OUT="${TMP}/bundle_out.pem"
 BUNDLE_ROOT_OUT="${TMP}/bundle_root_out.pem"
 
 # -----------------------------------------------------------------------------
-# Optional extra crypto fixtures/tests (not in your canonical 1–21 list)
+# Optional extra crypto fixtures/tests (not in your canonical 1-21 list)
 # -----------------------------------------------------------------------------
 if [[ "${EXTRA_CRYPTO}" == "1" ]]; then
   make_rsa_fixture 1024
