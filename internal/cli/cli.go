@@ -45,6 +45,19 @@ const (
 	VerbosityUltraSilent Verbosity = 2
 )
 
+// Mode is the operation the tool performs. ModeValidate (default) runs
+// full chain validation exactly as the legacy tool did; ModeInspect
+// describes certificate(s) without building or validating a chain;
+// ModeSplit writes each input certificate to its own file. Inspect and
+// Split are mutually exclusive with each other.
+type Mode int
+
+const (
+	ModeValidate Mode = iota
+	ModeInspect
+	ModeSplit
+)
+
 // Config holds every value derivable from the command line after
 // Parse succeeds. Fields are organized in the same order as the
 // original main()'s flag.* declarations to make code review against
@@ -75,6 +88,18 @@ type Config struct {
 	MaxCRL    int64
 	MaxLocal  int64
 	MaxRemote int64
+
+	// Operation mode + inspect/split/output options (certinspect feature
+	// port). Default Mode is ModeValidate; every field below is additive
+	// and leaves the legacy validate path unchanged when unset.
+	Mode        Mode
+	JSON        bool   // -json: machine-readable output
+	NoColor     bool   // -no-color: disable ANSI color in inspect table
+	Full        bool   // -full: inspect full per-certificate detail
+	Days        int    // -days: expiry warning threshold (days)
+	FailExpired bool   // -fail-expired: exit 2 if any evaluated cert expired
+	OutDir      string // -outdir: output directory for -split
+	SplitName   string // -split-name: "index" | "subject"
 
 	// Positional intermediates (CLI args after flags)
 	IntermediateArgs []string
@@ -131,6 +156,19 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	maxLocal := fs.Int64("max-local", DefaultMaxLocalFileBytes, "Max bytes to read from local cert file")
 	maxRemote := fs.Int64("max-cert", DefaultMaxRemoteCertFileSize, "Max bytes to download for remote cert file (http/https)")
 
+	// Operation modes (default = validate). Inspect/Split are mutually exclusive.
+	inspectMode := fs.Bool("inspect", false, "Inspect mode: describe certificate(s) without validating a chain (accepts file, directory, bundle, - for stdin, or URL)")
+	splitMode := fs.Bool("split", false, "Split mode: write each input certificate to its own file (see -outdir, -split-name)")
+
+	// Output format + expiry (apply across modes).
+	jsonOut := fs.Bool("json", false, "Machine-readable JSON output (mutually exclusive with -silent/-ultra-silent)")
+	noColor := fs.Bool("no-color", false, "Disable ANSI color in -inspect table output")
+	full := fs.Bool("full", false, "Inspect: show full per-certificate detail (implied by -json)")
+	days := fs.Int("days", 30, "Expiry warning threshold in days")
+	failExpired := fs.Bool("fail-expired", false, "Exit code 2 if any evaluated certificate is expired")
+	outDir := fs.String("outdir", "certs", "Output directory for -split")
+	splitName := fs.String("split-name", "index", "Split file naming mode: index or subject")
+
 	// Backward-compat aliases bound to the SAME flag.Value as the
 	// canonical name so both spellings update the same memory.
 	bindAliases(fs, map[string]string{
@@ -176,6 +214,13 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		MaxCRL:           *maxCRL,
 		MaxLocal:         *maxLocal,
 		MaxRemote:        *maxRemote,
+		JSON:             *jsonOut,
+		NoColor:          *noColor,
+		Full:             *full,
+		Days:             *days,
+		FailExpired:      *failExpired,
+		OutDir:           *outDir,
+		SplitName:        *splitName,
 		IntermediateArgs: fs.Args(),
 	}
 
@@ -220,6 +265,54 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 			}
 		}
 		cfg.AtTime = t
+	}
+
+	// --- Operation mode: -inspect and -split are mutually exclusive. ---
+	switch {
+	case *inspectMode && *splitMode:
+		return nil, &ParseError{
+			Message:  "choose only one operation: -inspect or -split (not both)",
+			ExitCode: 1,
+		}
+	case *inspectMode:
+		cfg.Mode = ModeInspect
+	case *splitMode:
+		cfg.Mode = ModeSplit
+	default:
+		cfg.Mode = ModeValidate
+	}
+
+	// --- Output format: at most one of -json / -silent / -ultra-silent. ---
+	formats := 0
+	for _, on := range []bool{*jsonOut, *silent, *ultraSilent} {
+		if on {
+			formats++
+		}
+	}
+	if formats > 1 {
+		return nil, &ParseError{
+			Message:  "choose only one output format: -json, -silent, or -ultra-silent",
+			ExitCode: 1,
+		}
+	}
+
+	// --- -days must be non-negative. ---
+	if cfg.Days < 0 {
+		return nil, &ParseError{
+			Message:  fmt.Sprintf("-days must be >= 0 (got %d)", cfg.Days),
+			ExitCode: 1,
+		}
+	}
+
+	// --- -split-name is a small enum. ---
+	switch cfg.SplitName {
+	case "index", "subject":
+		// ok
+	default:
+		return nil, &ParseError{
+			Message:  fmt.Sprintf("unknown -split-name: %s (want index or subject)", cfg.SplitName),
+			ExitCode: 1,
+		}
 	}
 
 	return cfg, nil
@@ -296,6 +389,21 @@ func writeUsage(w io.Writer, progName string, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "\n  7. Ultra Silent (Exit code only):")
 	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -ultra-silent")
 	fmt.Fprintln(w, "     (echo $?)")
+
+	fmt.Fprintln(w, "\n  8. Structured JSON output (validate/inspect/split):")
+	fmt.Fprintln(w, "     x509-cert-validator -cert https://github.com -json")
+
+	fmt.Fprintln(w, "\n  9. Inspect certificate(s) without validating (file, directory, bundle, or - for stdin):")
+	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert bundle.pem")
+	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert ./certs-dir --full")
+	fmt.Fprintln(w, "     cat chain.pem | x509-cert-validator -inspect -cert -")
+
+	fmt.Fprintln(w, "\n  10. Expiry gate for cron/CI (exit 2 if expired; pairs with silent modes):")
+	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert leaf.pem -days 30 -fail-expired -ultra-silent")
+
+	fmt.Fprintln(w, "\n  11. Split a multi-cert bundle into individual files:")
+	fmt.Fprintln(w, "     x509-cert-validator -split -cert bundle.pem -outdir out -split-name subject")
+
 	fmt.Fprintln(w, "\nNote: legacy flag names (e.g. -createCAbundle, -includeRoot, -showGraph,")
 	fmt.Fprintln(w, "      -ultrasilent, -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted")
 	fmt.Fprintln(w, "      as hidden aliases for backward compatibility.")

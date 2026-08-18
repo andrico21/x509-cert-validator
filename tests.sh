@@ -939,6 +939,47 @@ add_test "29. Expiry NOTICE (short-lived)" "PASS" "NOTICE.*expires soon" \
 add_test "30. Root Trust Label" "PASS" "Root Trust: Explicit User Root" \
   "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia"
 
+# ---- NEW TESTS (31..43): inspect / split / json / stdin / expiry gate ----
+
+add_test "31. Inspect: table" "PASS" "Role" \
+  "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt"
+
+add_test "32. Inspect: json" "PASS" "\"fingerprint_sha256\"" \
+  "${TOOL_BIN} -inspect -json -cert ${PKI}/leaf_valid.crt"
+
+add_test "33. Inspect: full detail" "PASS" "Public key" \
+  "${TOOL_BIN} -inspect -full -cert ${PKI}/leaf_valid.crt"
+
+add_test "34. Inspect: directory" "PASS" "Role" \
+  "${TOOL_BIN} -inspect -cert ${PKI}"
+
+add_test "35. Validate: json success" "PASS" "\"ok\": true" \
+  "${TOOL_BIN} -json -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia"
+
+add_test "36. Validate: json failure" "FAIL" "\"ok\": false" \
+  "${TOOL_BIN} -json -cert ${PKI}/leaf_valid.crt"
+
+add_test "37. Inspect: stdin" "PASS" "Role" \
+  "cat ${PKI}/leaf_valid.crt | ${TOOL_BIN} -inspect -cert -"
+
+add_test "38. Split: files" "PASS" "saved" \
+  "${TOOL_BIN} -split -cert ${INTER_PEM} -outdir ${TMP}/split_out"
+
+add_test "39. Split: json" "PASS" "\"count\"" \
+  "${TOOL_BIN} -split -json -cert ${INTER_PEM} -outdir ${TMP}/split_out_json"
+
+add_test "40. Expiry gate: -fail-expired exit 2 (at future)" "FAIL" "" \
+  "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt -at 2040-01-01T00:00:00Z -fail-expired -ultra-silent"
+
+add_test "41. Error: -inspect + -split" "FAIL" "one operation" \
+  "${TOOL_BIN} -inspect -split -cert ${PKI}/leaf_valid.crt"
+
+add_test "42. Error: -json + -silent" "FAIL" "one output format" \
+  "${TOOL_BIN} -json -silent -cert ${PKI}/leaf_valid.crt"
+
+add_test "43. Validate: directory input rejected" "FAIL" "directory input requires" \
+  "${TOOL_BIN} -cert ${PKI}"
+
 # ---- End of test definitions ----
 
 run_all_tests

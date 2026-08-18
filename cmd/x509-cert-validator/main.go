@@ -16,12 +16,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/andrico21/x509-cert-validator/internal/aia"
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
+	"github.com/andrico21/x509-cert-validator/internal/certinfo"
 	"github.com/andrico21/x509-cert-validator/internal/certload"
 	"github.com/andrico21/x509-cert-validator/internal/cli"
 	"github.com/andrico21/x509-cert-validator/internal/crl"
@@ -68,6 +70,14 @@ var (
 	hasInsecureAlgo    bool              // Flag to track if Go rejected verification due to insecure algorithm policy (e.g., SHA1)
 	sniOverride        string            // Optional SNI override for live HTTPS probes
 
+	// certinspect feature-port state. jsonMode routes validate output to
+	// -json and silences human diagnostics; validationTime is the effective
+	// evaluation time (honors -at) shared by validate/inspect/split;
+	// daysThreshold is the -days expiry window used by error-path helpers.
+	jsonMode       bool
+	validationTime time.Time
+	daysThreshold  = 30
+
 	// Effective limits (set from flags). MaxAIA/MaxCRL now live on
 	// runValidator; only globals still referenced by stateful per-print
 	// helpers remain here pending Step J.
@@ -112,6 +122,12 @@ func main() {
 	showAllFP = cfg.FPShowAll
 	verbosity = int(cfg.Verbosity)
 	sniOverride = cfg.SNI
+	jsonMode = cfg.JSON
+	daysThreshold = cfg.Days
+	validationTime = time.Now()
+	if !cfg.AtTime.IsZero() {
+		validationTime = cfg.AtTime
+	}
 
 	// Build the run-scoped Validator: one *http.Client (connection pool
 	// shared across AIA + CRL fetches in this run), one Logger, all
@@ -153,20 +169,35 @@ func main() {
 		exitErr(fmt.Errorf("unsupported -root scheme: file:// is not accepted; provide a local path or http(s) URL"))
 	}
 
-	logNormal("Runtime: %s\n", runtime.Version())
-
-	// --- 0. Root context with global wall-clock cap for all network operations.
+	// Root context with a global wall-clock cap for all network operations.
 	// Per-fetch caps (DefaultHTTPTimeout / DefaultTLSProbeTimeout) still apply
-	// inside individual helpers; this umbrella prevents pathological worst-case
-	// latency from a deep AIA walk + many CRL fetches stacking up.
+	// inside individual helpers; this umbrella prevents a deep AIA walk + many
+	// CRL fetches from stacking up.
 	ctx, cancelCtx := context.WithTimeout(context.Background(), DefaultGlobalTimeout)
 	defer cancelCtx()
 
-	// --- 1. Setup Validation Time ---
-	currentTime := time.Now()
-	if !cfg.AtTime.IsZero() {
-		currentTime = cfg.AtTime
+	// Mode dispatch: -inspect and -split are non-validating operations that
+	// share -cert input loading (file/dir/bundle/stdin/URL) but not the
+	// chain-building validate path below.
+	switch cfg.Mode {
+	case cli.ModeInspect:
+		os.Exit(runInspect(ctx, cfg))
+	case cli.ModeSplit:
+		os.Exit(runSplit(ctx, cfg))
 	}
+
+	// validate: the -cert target must be a single leaf, not a directory
+	// (directory input is an -inspect/-split capability). Checked up front so
+	// the error is clean, before any root/intermediate loading chatter.
+	// #nosec G703 -- statting the user-specified -cert path is by design (this tool reads operator-provided certificate paths).
+	if fi, err := os.Stat(*certPath); err == nil && fi.IsDir() {
+		exitErr(fmt.Errorf("-cert is a directory; directory input requires -inspect or -split (validate needs a single leaf file/URL)"))
+	}
+
+	logNormal("Runtime: %s\n", runtime.Version())
+
+	// --- 1. Setup Validation Time (honors -at via validationTime). ---
+	currentTime := validationTime
 	logNormal("Validation Time: %s\n", currentTime.Format(time.RFC3339))
 
 	// --- 2. Determine Key Usage ---
@@ -465,6 +496,30 @@ func main() {
 		logNormal("✅ CRL CHECK PASSED\n")
 	}
 
+	// -json: emit the structured validation result instead of the human
+	// report (which logNormal has been suppressing throughout this run).
+	if jsonMode {
+		leafInfo := certinfo.FromCert(leaf, 0, currentTime, cfg.Days)
+		res := validateJSON{
+			OK:             true,
+			ValidationTime: currentTime,
+			RootTrust:      rootSourceLabel,
+			Leaf:           &leafInfo,
+			Chains:         chainsToInfos(chains, currentTime, cfg.Days),
+			CRLChecked:     *enableCRL,
+			Expiry: &expiryJSON{
+				DaysRemaining: leafInfo.DaysRemaining,
+				Expired:       leafInfo.Expired,
+				Expiring:      leafInfo.Expiring,
+				ThresholdDays: cfg.Days,
+			},
+		}
+		if err := emitJSON(res); err != nil {
+			exitErr(fmt.Errorf("json encode failed: %v", err))
+		}
+		os.Exit(0)
+	}
+
 	exitSuccess()
 }
 
@@ -666,12 +721,26 @@ func readWithLimit(r io.Reader, limit int64) ([]byte, error) {
 // passed through display.SanitizeTerminal so untrusted certificate fields
 // (CNs, DNs, SANs, URLs) cannot inject terminal escape sequences.
 func logNormal(format string, args ...any) {
-	if verbosity == LevelNormal {
+	if verbosity == LevelNormal && !jsonMode {
 		fmt.Print(display.SanitizeTerminal(fmt.Sprintf(format, args...)))
 	}
 }
 
 func exitErr(err error) {
+	if jsonMode {
+		res := validateJSON{
+			OK:             false,
+			Error:          err.Error(),
+			ValidationTime: validationTime,
+			RootTrust:      rootSourceLabel,
+		}
+		if targetLeaf != nil {
+			li := certinfo.FromCert(targetLeaf, 0, validationTime, daysThreshold)
+			res.Leaf = &li
+		}
+		_ = emitJSON(res)
+		os.Exit(1)
+	}
 	if verbosity == LevelUltraSilent {
 		os.Exit(1)
 	}
@@ -754,6 +823,10 @@ func printCertDetails(label string, cert *x509.Certificate) {
 }
 
 func loadAll(ctx context.Context, input string) []*x509.Certificate {
+	if strings.TrimSpace(input) == "-" {
+		return loadStdin()
+	}
+
 	s := strings.ToLower(strings.TrimSpace(input))
 	if strings.HasPrefix(s, "file://") {
 		exitErr(fmt.Errorf("unsupported path scheme: file:// is not accepted (%s)", input))
@@ -765,7 +838,68 @@ func loadAll(ctx context.Context, input string) []*x509.Certificate {
 	if strings.HasPrefix(s, "http://") {
 		return downloadCertFile(ctx, input)
 	}
+	// Local path: directory (load every cert inside) or a single file.
+	// #nosec G703 -- statting the user-specified -cert path is by design (this tool reads operator-provided certificate paths).
+	if fi, err := os.Stat(input); err == nil && fi.IsDir() {
+		return loadDir(input)
+	}
 	return loadLocalFile(input)
+}
+
+// loadStdin reads PEM/DER certificate bytes from standard input (used when
+// -cert is "-"), applying the same size cap as a local file. Enables the
+// pipe workflow, e.g. `cat chain.pem | x509-cert-validator -inspect -cert -`.
+func loadStdin() []*x509.Certificate {
+	data, err := readWithLimit(os.Stdin, maxLocalFileBytes)
+	if err != nil {
+		exitErr(fmt.Errorf("read error (stdin): %v", err))
+	}
+	return parseCertsFromData(data, "stdin")
+}
+
+// loadDir loads every certificate found across the files in dir (one level,
+// non-recursive). Files that contain no certificates are skipped rather than
+// failing the whole scan, so a mixed directory (keys, configs, certs) works.
+// The returned order follows os.ReadDir (lexical by name).
+func loadDir(dir string) []*x509.Certificate {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		exitErr(fmt.Errorf("read dir error (%s): %v", dir, err))
+	}
+	var all []*x509.Certificate
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		// #nosec G304 G703 -- scanning a user-specified directory of certificate files is the tool's purpose; the path being a variable is by design.
+		f, err := os.Open(p)
+		if err != nil {
+			logNormal("⚠️  Skipping unreadable file %s: %v\n", p, err)
+			continue
+		}
+		data, err := readWithLimit(f, maxLocalFileBytes)
+		_ = f.Close()
+		if err != nil {
+			logNormal("⚠️  Skipping %s: %v\n", p, err)
+			continue
+		}
+		res := certload.ParseCertsSafe(data)
+		if res.HasUnsupportedAlgo {
+			hasUnsupportedAlgo = true
+		}
+		if res.HasInsecureAlgo {
+			hasInsecureAlgo = true
+		}
+		for _, c := range res.Certs {
+			flagUnsupportedIfNeeded(c)
+			all = append(all, c)
+		}
+	}
+	if len(all) == 0 {
+		exitErr(fmt.Errorf("no certificates found in directory %s", dir))
+	}
+	return all
 }
 
 func fetchRemoteCert(ctx context.Context, urlStr string) []*x509.Certificate {

@@ -53,17 +53,29 @@ Usage of ./x509-cert-validator:
   -at string
         Optional: Validate at RFC3339 time
   -cert string
-        Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.
+        Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe).
+        Also accepts a directory of certs or "-" for stdin (inspect/split). Note: file:// is NOT supported.
   -create-ca-bundle string
         Optional: Path to create/export CA bundle. On success, exports from verified chain(s).
   -crl
         Enable certificate revocation checking (CRL)
+  -days int
+        Expiry warning threshold in days (default 30)
   -dns string
         Optional: Verify specific DNS name
+  -fail-expired
+        Exit code 2 if any evaluated certificate is expired
   -fp-show-all
         Show alternative fingerprint algo values (+MD5, SHA-384, SHA-512)
+  -full
+        Inspect: show full per-certificate detail (implied by -json)
   -include-root
         Include Root/Trust-Anchor certificate(s) in the generated bundle
+  -inspect
+        Inspect mode: describe certificate(s) without validating a chain
+        (accepts file, directory, bundle, - for stdin, or URL)
+  -json
+        Machine-readable JSON output (mutually exclusive with -silent/-ultra-silent)
   -max-aia int
         Max bytes to download per AIA issuer fetch (default 524288)
   -max-cert int
@@ -72,6 +84,10 @@ Usage of ./x509-cert-validator:
         Max bytes to download per CRL URL (default 20971520)
   -max-local int
         Max bytes to read from local cert file (default 1048576)
+  -no-color
+        Disable ANSI color in -inspect table output
+  -outdir string
+        Output directory for -split (default "certs")
   -root string
         Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).
   -show-graph
@@ -80,6 +96,10 @@ Usage of ./x509-cert-validator:
         Output only pass/fail status and cert ID
   -sni string
         Optional: Override TLS SNI for live HTTPS probes (https://...)
+  -split
+        Split mode: write each input certificate to its own file (see -outdir, -split-name)
+  -split-name string
+        Split file naming mode: index or subject (default "index")
   -type string
         Validation type: server, client, or any (default "any")
   -ultra-silent
@@ -122,7 +142,234 @@ EXAMPLES:
   7. Ultra Silent (Exit code only):
      x509-cert-validator -cert leaf.pem -ultra-silent
      (echo $?)
+
+  8. Structured JSON output (validate/inspect/split):
+     x509-cert-validator -cert https://github.com -json
+
+  9. Inspect certificate(s) without validating (file, directory, bundle, or - for stdin):
+     x509-cert-validator -inspect -cert bundle.pem
+     x509-cert-validator -inspect -cert ./certs-dir -full
+     cat chain.pem | x509-cert-validator -inspect -cert -
+
+  10. Expiry gate for cron/CI (exit 2 if expired; pairs with silent modes):
+      x509-cert-validator -inspect -cert leaf.pem -days 30 -fail-expired -ultra-silent
+
+  11. Split a multi-cert bundle into individual files:
+      x509-cert-validator -split -cert bundle.pem -outdir out -split-name subject
 ```
+
+## Modes: inspect / split / JSON / expiry gate
+
+Chain **validation** is the default operation and every existing invocation keeps
+working unchanged. Layered on top are two additional operations (`-inspect`,
+`-split`), machine-readable `-json` output, and an expiry gate — all plain flags,
+no subcommands.
+
+All operations share the same `-cert` input, which now also accepts a
+**directory** of certificates or `-` for **stdin**, in addition to a file, an
+`http(s)://` URL, or an `https://` live probe.
+
+| Flag | Operation | Validates chain? | Typical use |
+|---|---|---|---|
+| *(default)* | validate | yes | prove a leaf chains to a trusted root |
+| `-inspect` | describe cert(s) | no | list/scan a bundle, directory, or endpoint |
+| `-split` | extract cert(s) | no | break a bundle into per-cert files |
+
+**Exit codes:** `0` success · `1` error / invalid · `2` `-fail-expired` and a certificate is expired.
+
+**Output formats** (mutually exclusive): default human · `-json` · `-silent` · `-ultra-silent`. `-no-color` is an extra modifier for the inspect table.
+
+### `-inspect` — describe certificate(s), no chain validation
+
+Prints a summary table of every certificate in the input:
+
+```shell
+x509-cert-validator -inspect -cert bundle.pem
+```
+
+```
+#  Role          Subject                   Issuer           Not After         Remaining  Status  SHA-256
+-  ------------  ------------------------  ---------------  ----------------  ---------  ------  ----------------
+0  server        leaf.test.example.com  Test Issuing CA  2026-09-27 11:42  39d        valid   9E5302A0CF841EA2
+1  intermediate  Test Issuing CA           Test Root CA     2031-08-17 11:42  1824d      valid   1A40B93E0562694D
+2  root          Test Root CA              Test Root CA     2036-08-15 11:42  3649d      valid   32F85F65B304941A
+```
+
+The `Status` column is colour-coded on a TTY (green `valid` / yellow `expiring` /
+red `expired`); disable it with `-no-color` or the `NO_COLOR` environment variable.
+Point it at a directory to scan every certificate inside, or pipe a chain in on
+stdin:
+
+```shell
+x509-cert-validator -inspect -cert ./ca-dir            # every cert in a folder
+cat chain.pem | x509-cert-validator -inspect -cert -   # from stdin
+```
+
+`-full` appends a per-certificate detail block after the table:
+
+```shell
+x509-cert-validator -inspect -full -cert leaf.pem
+```
+
+```
+== Certificate 0 (leaf.test.example.com) ==
+Index             0
+Role              server
+Subject           CN=leaf.test.example.com
+Issuer            CN=Test Issuing CA,O=Example Org
+Serial            03
+Not Before        2026-08-18 10:42:42 UTC
+Not After         2026-09-27 11:42:42 UTC
+Validity          39 days remaining
+Is CA             false
+Self-signed       false
+Public key        RSA 2048 bits
+Signature         SHA256-RSA
+DNS names         leaf.test.example.com, www.test.example.com
+Key usage         digitalSignature, keyEncipherment
+Ext key usage     serverAuth
+SHA-256           9E5302A0CF841EA26A8348A2A1DA3BE580675A06F665521357F11072CBDD6649
+SHA-1             48B73813121BED31D92B07D16A8899ED91C0406D
+AIA CA issuers    http://pki.test.example.com/aia/issuing-ca.crt
+CRL distribution  http://pki.test.example.com/crl/issuing-ca.crl
+```
+
+### Expiry gate — `-days N` + `-fail-expired`
+
+`-days` sets the "expiring" warning window (default 30); `-fail-expired` makes the
+process exit **2** if any evaluated certificate is expired. Combined with a silent
+mode it becomes a pure exit-code check for cron/CI — no output, just a status.
+`-at` lets you test against a future date:
+
+```shell
+# 0 = all valid, 2 = something expired. Here we ask "will it be expired in 2040?"
+x509-cert-validator -inspect -cert leaf.pem -at 2040-01-01T00:00:00Z -fail-expired -ultra-silent
+echo $?    # -> 2
+```
+
+### `-split` — decompose a bundle into individual files
+
+Writes each certificate in the input to its own PEM file under `-outdir`
+(default `certs`). `-split-name` chooses `index` (default → `NN_subject.crt`) or
+`subject` (→ `subject.crt`, de-duplicated with a `-N` suffix):
+
+```shell
+x509-cert-validator -split -cert bundle.pem -outdir out
+```
+
+```
+saved  out/00_leaf-test-example-com.crt
+saved  out/01_test-issuing-ca.crt
+saved  out/02_test-root-ca.crt
+```
+
+### `-json` — structured output (validate, inspect, split)
+
+Add `-json` to emit a stable, machine-readable document instead of the human
+report (mutually exclusive with `-silent`/`-ultra-silent`) — ideal for scripting
+expiry checks, extracting fingerprints, or feeding a pipeline.
+
+**`-inspect -json`** → an array of certificate objects:
+
+```shell
+x509-cert-validator -inspect -json -cert leaf.pem
+```
+
+```json
+[
+  {
+    "index": 0,
+    "role": "server",
+    "subject": "CN=leaf.test.example.com",
+    "subject_cn": "leaf.test.example.com",
+    "issuer": "CN=Test Issuing CA,O=Example Org",
+    "issuer_cn": "Test Issuing CA",
+    "serial_number": "03",
+    "not_before": "2026-08-18T10:42:42Z",
+    "not_after": "2026-09-27T11:42:42Z",
+    "days_remaining": 39,
+    "expired": false,
+    "expiring": false,
+    "is_ca": false,
+    "self_signed": false,
+    "public_key_algorithm": "RSA",
+    "public_key_bits": 2048,
+    "signature_algorithm": "SHA256-RSA",
+    "dns_names": ["leaf.test.example.com", "www.test.example.com"],
+    "key_usage": ["digitalSignature", "keyEncipherment"],
+    "ext_key_usage": ["serverAuth"],
+    "fingerprint_sha1": "48B73813121BED31D92B07D16A8899ED91C0406D",
+    "fingerprint_sha256": "9E5302A0CF841EA26A8348A2A1DA3BE580675A06F665521357F11072CBDD6649",
+    "aia_ca_issuers": ["http://pki.test.example.com/aia/issuing-ca.crt"],
+    "crl_distribution_points": ["http://pki.test.example.com/crl/issuing-ca.crl"]
+  }
+]
+```
+
+**`-json` validate** → the verdict, the leaf, every verified path, and the
+leaf-expiry summary. On failure `ok` is `false` and `error` carries the reason.
+Abbreviated below — `leaf` and each `chains[][]` entry are full `CertInfo`
+objects with the identical shape shown above:
+
+```json
+{
+  "ok": true,
+  "validation_time": "2026-08-18T15:52:17+04:00",
+  "root_trust": "Explicit User Root",
+  "leaf": { "index": 0, "role": "server", "subject_cn": "leaf.test.example.com", ... },
+  "chains": [
+    [ { "role": "server", ... }, { "role": "intermediate", ... }, { "role": "root", "self_signed": true, ... } ]
+  ],
+  "crl_checked": false,
+  "expiry": { "days_remaining": 39, "expired": false, "expiring": false, "threshold_days": 30 }
+}
+```
+
+**`-split -json`** → a manifest of what was written:
+
+```shell
+x509-cert-validator -split -json -cert bundle.pem -outdir out -split-name subject
+```
+
+```json
+{
+  "input": "bundle.pem",
+  "outdir": "out",
+  "count": 3,
+  "written": [
+    { "file": "out/leaf-test-example-com.crt", "index": 0, "subject_cn": "leaf.test.example.com", "fingerprint_sha256": "9E5302A0..." },
+    { "file": "out/test-issuing-ca.crt", "index": 1, "subject_cn": "Test Issuing CA", "fingerprint_sha256": "1A40B93E..." },
+    { "file": "out/test-root-ca.crt", "index": 2, "subject_cn": "Test Root CA", "fingerprint_sha256": "32F85F65..." }
+  ]
+}
+```
+
+#### JSON field reference
+
+Every certificate object (an inspect array element, or validate `leaf` /
+`chains[][]`) is the same `CertInfo` shape:
+
+| Field | Type | Notes |
+|---|---|---|
+| `index` | int | position in the input / chain (0 = leaf) |
+| `role` | string | `server` / `intermediate` / `root` (positional heuristic) |
+| `subject`, `issuer` | string | full DN |
+| `subject_cn`, `issuer_cn` | string | CN only; omitted when empty |
+| `serial_number` | string | hex |
+| `not_before`, `not_after` | string | RFC 3339 timestamps |
+| `days_remaining` | int | negative once expired |
+| `expired`, `expiring` | bool | `expiring` = within `-days` and not yet expired |
+| `is_ca`, `self_signed` | bool | |
+| `public_key_algorithm`, `public_key_bits` | string, int | e.g. `RSA`, `2048` |
+| `signature_algorithm` | string | e.g. `SHA256-RSA` |
+| `dns_names`, `ip_addresses`, `email_addresses`, `uris` | []string | SANs; omitted when empty |
+| `key_usage`, `ext_key_usage` | []string | decoded names; omitted when empty |
+| `fingerprint_sha1`, `fingerprint_sha256` | string | uppercase hex |
+| `aia_ca_issuers`, `crl_distribution_points` | []string | omitted when empty |
+
+> Compatibility: the inspect array is a superset of the sibling `certinspect`
+> tool's `--json` (same field names, plus `expired`/`expiring`). The validate and
+> split documents are specific to this tool.
 
 ## Validating of sample certificate (from Go website) - from file
 ```shell

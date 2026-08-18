@@ -288,3 +288,105 @@ func TestNormalizeSNI(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Parse - inspect/split/json/expiry flags (certinspect feature port)
+// ============================================================================
+
+func TestParseModeDefaultsToValidate(t *testing.T) {
+	cfg, err := Parse([]string{"-cert", "leaf.pem"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode != ModeValidate {
+		t.Errorf("Mode: got %d, want ModeValidate", cfg.Mode)
+	}
+	if cfg.Days != 30 {
+		t.Errorf("Days default: got %d, want 30", cfg.Days)
+	}
+	if cfg.OutDir != "certs" {
+		t.Errorf("OutDir default: got %q, want certs", cfg.OutDir)
+	}
+	if cfg.SplitName != "index" {
+		t.Errorf("SplitName default: got %q, want index", cfg.SplitName)
+	}
+}
+
+func TestParseInspectMode(t *testing.T) {
+	cfg, err := Parse([]string{"-inspect", "-cert", "bundle.pem", "-json", "-days", "10", "-fail-expired", "-full"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode != ModeInspect {
+		t.Errorf("Mode: got %d, want ModeInspect", cfg.Mode)
+	}
+	if !cfg.JSON || !cfg.FailExpired || !cfg.Full {
+		t.Errorf("expected JSON/FailExpired/Full all true, got %+v", cfg)
+	}
+	if cfg.Days != 10 {
+		t.Errorf("Days: got %d, want 10", cfg.Days)
+	}
+}
+
+func TestParseSplitMode(t *testing.T) {
+	cfg, err := Parse([]string{"-split", "-cert", "bundle.pem", "-outdir", "out", "-split-name", "subject"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode != ModeSplit {
+		t.Errorf("Mode: got %d, want ModeSplit", cfg.Mode)
+	}
+	if cfg.OutDir != "out" || cfg.SplitName != "subject" {
+		t.Errorf("split options: OutDir=%q SplitName=%q", cfg.OutDir, cfg.SplitName)
+	}
+}
+
+func TestParseRejectsInspectAndSplit(t *testing.T) {
+	_, err := Parse([]string{"-inspect", "-split", "-cert", "x.pem"}, "test", io.Discard)
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.ExitCode != 1 || !strings.Contains(pe.Message, "one operation") {
+		t.Errorf("want exit 1 + 'one operation', got code=%d msg=%q", pe.ExitCode, pe.Message)
+	}
+}
+
+func TestParseRejectsMultipleOutputFormats(t *testing.T) {
+	for _, args := range [][]string{
+		{"-cert", "x.pem", "-json", "-silent"},
+		{"-cert", "x.pem", "-json", "-ultra-silent"},
+		{"-cert", "x.pem", "-silent", "-ultra-silent"},
+	} {
+		_, err := Parse(args, "test", io.Discard)
+		pe, ok := err.(*ParseError)
+		if !ok {
+			t.Fatalf("args %v: expected *ParseError, got %T: %v", args, err, err)
+		}
+		if pe.ExitCode != 1 || !strings.Contains(pe.Message, "one output format") {
+			t.Errorf("args %v: want exit 1 + 'one output format', got code=%d msg=%q", args, pe.ExitCode, pe.Message)
+		}
+	}
+}
+
+func TestParseRejectsBadSplitName(t *testing.T) {
+	_, err := Parse([]string{"-split", "-cert", "x.pem", "-split-name", "bogus"}, "test", io.Discard)
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.ExitCode != 1 || !strings.Contains(pe.Message, "split-name") {
+		t.Errorf("want exit 1 + 'split-name', got code=%d msg=%q", pe.ExitCode, pe.Message)
+	}
+}
+
+func TestParseRejectsNegativeDays(t *testing.T) {
+	_, err := Parse([]string{"-cert", "x.pem", "-days", "-1"}, "test", io.Discard)
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if pe.ExitCode != 1 || !strings.Contains(pe.Message, "days") {
+		t.Errorf("want exit 1 + 'days', got code=%d msg=%q", pe.ExitCode, pe.Message)
+	}
+}
