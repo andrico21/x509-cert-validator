@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
@@ -46,6 +47,23 @@ func runInspect(ctx context.Context, cfg *cli.Config) int {
 		}
 		// verbosity Silent/UltraSilent: no descriptive output, exit code only
 		// (useful as a pure -fail-expired gate).
+	}
+
+	// -export writes the loaded certs to disk. Scope "ca" keeps only CA
+	// certificates (inspect has no verified chain to derive a bundle from);
+	// scope "all" writes every loaded certificate.
+	if cfg.Export != "" {
+		toExport := certs
+		if cfg.ExportScope == "ca" {
+			var cas []*x509.Certificate
+			for _, c := range certs {
+				if c.IsCA {
+					cas = append(cas, c)
+				}
+			}
+			toExport = cas
+		}
+		exportCerts(toExport, cfg)
 	}
 
 	if (cfg.FailExpired && anyExpiredInfo(infos)) || (cfg.FailExpiring && anyExpiringInfo(infos)) {

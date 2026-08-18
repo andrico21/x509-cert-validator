@@ -46,16 +46,14 @@ const (
 )
 
 // Mode is the operation the tool performs. ModeValidate (default) runs
-// full chain validation exactly as the legacy tool did; ModeInspect
-// describes certificate(s) without building or validating a chain;
-// ModeSplit writes each input certificate to its own file. Inspect and
-// Split are mutually exclusive with each other.
+// full chain validation; ModeInspect describes certificate(s) without
+// building or validating a chain. Either mode can additionally write
+// certificates to disk via -export.
 type Mode int
 
 const (
 	ModeValidate Mode = iota
 	ModeInspect
-	ModeSplit
 )
 
 // Config holds every value derivable from the command line after
@@ -71,14 +69,13 @@ type Config struct {
 	AtTime   time.Time
 
 	// Switches
-	EnableCRL        bool
-	EnableAIA        bool
-	CreateBundlePath string
-	IncludeRoot      bool
-	Usage            string // "server" | "client" | "any"
-	ShowGraph        bool
-	ShowVersion      bool
-	FPShowAll        bool
+	EnableCRL   bool
+	EnableAIA   bool
+	IncludeRoot bool
+	Usage       string // "server" | "client" | "any"
+	ShowGraph   bool
+	ShowVersion bool
+	FPShowAll   bool
 
 	// Verbosity (computed from -silent / -ultra-silent)
 	Verbosity Verbosity
@@ -89,9 +86,7 @@ type Config struct {
 	MaxLocal  int64
 	MaxRemote int64
 
-	// Operation mode + inspect/split/output options (certinspect feature
-	// port). Default Mode is ModeValidate; every field below is additive
-	// and leaves the legacy validate path unchanged when unset.
+	// Operation mode + output options. Default Mode is ModeValidate.
 	Mode         Mode
 	JSON         bool   // -json: machine-readable output
 	NoColor      bool   // -no-color: disable ANSI color in inspect table
@@ -99,8 +94,10 @@ type Config struct {
 	Days         int    // -days: expiry warning threshold (days)
 	FailExpired  bool   // -fail-expired: exit 2 if any evaluated cert expired
 	FailExpiring bool   // -fail-expiring: exit 2 if any cert is within -days (or already expired)
-	OutDir       string // -outdir: output directory for -split
-	SplitName    string // -split-name: "index" | "subject"
+	Export       string // -export: destination (file for bundle, dir for split); empty = no export
+	ExportFormat string // -export-format: "bundle" | "split"
+	ExportScope  string // -export-scope: "ca" | "all"
+	ExportName   string // -export-name: "index" | "subject" (split filenames)
 
 	// Positional intermediates (CLI args after flags)
 	IntermediateArgs []string
@@ -143,8 +140,7 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	atTime := fs.String("at", "", "Optional: Validate at RFC3339 time")
 	enableCRL := fs.Bool("crl", false, "Enable certificate revocation checking (CRL)")
 	enableAIA := fs.Bool("aia", false, "Enable automatic AIA fetching")
-	createBundlePath := fs.String("create-ca-bundle", "", "Optional: Path to create/export CA bundle. On success, exports from verified chain(s).")
-	includeRoot := fs.Bool("include-root", false, "Include Root/Trust-Anchor certificate(s) in the generated bundle")
+	includeRoot := fs.Bool("include-root", false, "Include the root/trust-anchor certificate in the export (ca scope)")
 	usage := fs.String("type", "any", "Validation type: server, client, or any")
 	showGraph := fs.Bool("show-graph", false, "Display ASCII graph of the verified chain")
 	silent := fs.Bool("silent", false, "Output only pass/fail status and cert ID")
@@ -157,9 +153,8 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	maxLocal := fs.Int64("max-local", DefaultMaxLocalFileBytes, "Max bytes to read from local cert file")
 	maxRemote := fs.Int64("max-cert", DefaultMaxRemoteCertFileSize, "Max bytes to download for remote cert file (http/https)")
 
-	// Operation modes (default = validate). Inspect/Split are mutually exclusive.
+	// Operation mode (default = validate).
 	inspectMode := fs.Bool("inspect", false, "Inspect mode: describe certificate(s) without validating a chain (accepts file, directory, bundle, - for stdin, or URL)")
-	splitMode := fs.Bool("split", false, "Split mode: write each input certificate to its own file (see -outdir, -split-name)")
 
 	// Output format + expiry (apply across modes).
 	jsonOut := fs.Bool("json", false, "Machine-readable JSON output (mutually exclusive with -silent/-ultra-silent)")
@@ -168,20 +163,23 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	days := fs.Int("days", 30, "Expiry warning threshold in days")
 	failExpired := fs.Bool("fail-expired", false, "Exit code 2 if any evaluated certificate is expired")
 	failExpiring := fs.Bool("fail-expiring", false, "Exit code 2 if any evaluated certificate is expiring within -days (or already expired)")
-	outDir := fs.String("outdir", "certs", "Output directory for -split")
-	splitName := fs.String("split-name", "index", "Split file naming mode: index or subject")
+
+	// Unified export (validate mode exports the verified chain; -inspect exports the loaded certs).
+	export := fs.String("export", "", "Export destination: a file (bundle) or a directory (split). Empty = no export")
+	exportFormat := fs.String("export-format", "bundle", "Export format: bundle (one PEM file) or split (one file per cert)")
+	exportScope := fs.String("export-scope", "ca", "Export scope: ca (CA chain, excludes leaf) or all (every cert)")
+	exportName := fs.String("export-name", "index", "Split filename scheme: index or subject")
 
 	// Backward-compat aliases bound to the SAME flag.Value as the
 	// canonical name so both spellings update the same memory.
 	bindAliases(fs, map[string]string{
-		"createCAbundle": "create-ca-bundle",
-		"includeRoot":    "include-root",
-		"showGraph":      "show-graph",
-		"ultrasilent":    "ultra-silent",
-		"maxaia":         "max-aia",
-		"maxcrl":         "max-crl",
-		"maxlocal":       "max-local",
-		"maxcert":        "max-cert",
+		"includeRoot": "include-root",
+		"showGraph":   "show-graph",
+		"ultrasilent": "ultra-silent",
+		"maxaia":      "max-aia",
+		"maxcrl":      "max-crl",
+		"maxlocal":    "max-local",
+		"maxcert":     "max-cert",
 	})
 
 	if err := fs.Parse(args); err != nil {
@@ -206,7 +204,6 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		SNI:              normalizeSNI(*sni),
 		EnableCRL:        *enableCRL,
 		EnableAIA:        *enableAIA,
-		CreateBundlePath: *createBundlePath,
 		IncludeRoot:      *includeRoot,
 		Usage:            *usage,
 		ShowGraph:        *showGraph,
@@ -222,8 +219,10 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		Days:             *days,
 		FailExpired:      *failExpired,
 		FailExpiring:     *failExpiring,
-		OutDir:           *outDir,
-		SplitName:        *splitName,
+		Export:           *export,
+		ExportFormat:     *exportFormat,
+		ExportScope:      *exportScope,
+		ExportName:       *exportName,
 		IntermediateArgs: fs.Args(),
 	}
 
@@ -270,18 +269,10 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		cfg.AtTime = t
 	}
 
-	// --- Operation mode: -inspect and -split are mutually exclusive. ---
-	switch {
-	case *inspectMode && *splitMode:
-		return nil, &ParseError{
-			Message:  "choose only one operation: -inspect or -split (not both)",
-			ExitCode: 1,
-		}
-	case *inspectMode:
+	// --- Operation mode (default validate; -inspect switches to describe). ---
+	if *inspectMode {
 		cfg.Mode = ModeInspect
-	case *splitMode:
-		cfg.Mode = ModeSplit
-	default:
+	} else {
 		cfg.Mode = ModeValidate
 	}
 
@@ -307,13 +298,31 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		}
 	}
 
-	// --- -split-name is a small enum. ---
-	switch cfg.SplitName {
+	// --- Export enums (validated regardless of whether -export is set). ---
+	switch cfg.ExportFormat {
+	case "bundle", "split":
+		// ok
+	default:
+		return nil, &ParseError{
+			Message:  fmt.Sprintf("unknown -export-format: %s (want bundle or split)", cfg.ExportFormat),
+			ExitCode: 1,
+		}
+	}
+	switch cfg.ExportScope {
+	case "ca", "all":
+		// ok
+	default:
+		return nil, &ParseError{
+			Message:  fmt.Sprintf("unknown -export-scope: %s (want ca or all)", cfg.ExportScope),
+			ExitCode: 1,
+		}
+	}
+	switch cfg.ExportName {
 	case "index", "subject":
 		// ok
 	default:
 		return nil, &ParseError{
-			Message:  fmt.Sprintf("unknown -split-name: %s (want index or subject)", cfg.SplitName),
+			Message:  fmt.Sprintf("unknown -export-name: %s (want index or subject)", cfg.ExportName),
 			ExitCode: 1,
 		}
 	}
@@ -373,10 +382,10 @@ func writeUsage(w io.Writer, progName string, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "     x509-cert-validator -cert client-cert.pem -type client")
 	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -crl")
 
-	fmt.Fprintln(w, "\n  4. Fix Local Chain & Export Bundle:")
-	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle full-chain.crt")
-	fmt.Fprintln(w, "     Exporting Root CA (-include-root) requires explicit specification of root CA's certificate file (-root <filename>).")
-	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle bundle.crt -include-root -root custom-root-ca.crt")
+	fmt.Fprintln(w, "\n  4. Validate and export the CA trust bundle (defaults: -export-format bundle, -export-scope ca):")
+	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -aia -export full-chain.crt")
+	fmt.Fprintln(w, "     Exporting the Root CA (-include-root) requires an explicit root file (-root <filename>).")
+	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -aia -export bundle.crt -include-root -root custom-root-ca.crt")
 	fmt.Fprintln(w, "     (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)")
 	fmt.Fprintln(w, "     (    Never install an unknown Root CA unless you know what you are doing)")
 	fmt.Fprintln(w, "     (    and have verified its fingerprint manually.)")
@@ -393,23 +402,23 @@ func writeUsage(w io.Writer, progName string, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "     x509-cert-validator -cert leaf.pem -ultra-silent")
 	fmt.Fprintln(w, "     (echo $?)")
 
-	fmt.Fprintln(w, "\n  8. Structured JSON output (validate/inspect/split):")
+	fmt.Fprintln(w, "\n  8. Structured JSON output (validate/inspect):")
 	fmt.Fprintln(w, "     x509-cert-validator -cert https://github.com -json")
 
 	fmt.Fprintln(w, "\n  9. Inspect certificate(s) without validating (file, directory, bundle, or - for stdin):")
 	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert bundle.pem")
-	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert ./certs-dir --full")
+	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert ./certs-dir -full")
 	fmt.Fprintln(w, "     cat chain.pem | x509-cert-validator -inspect -cert -")
 
 	fmt.Fprintln(w, "\n  10. Expiry gate for cron/CI (exit 2 if expired; pairs with silent modes):")
 	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert leaf.pem -days 30 -fail-expired -ultra-silent")
 
-	fmt.Fprintln(w, "\n  11. Split a multi-cert bundle into individual files:")
-	fmt.Fprintln(w, "     x509-cert-validator -split -cert bundle.pem -outdir out -split-name subject")
+	fmt.Fprintln(w, "\n  11. Export as individual files instead of a bundle (-export-format split writes a directory):")
+	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all -export-name subject")
 
-	fmt.Fprintln(w, "\nNote: legacy flag names (e.g. -createCAbundle, -includeRoot, -showGraph,")
-	fmt.Fprintln(w, "      -ultrasilent, -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted")
-	fmt.Fprintln(w, "      as hidden aliases for backward compatibility.")
+	fmt.Fprintln(w, "\nNote: legacy flag names (e.g. -includeRoot, -showGraph, -ultrasilent,")
+	fmt.Fprintln(w, "      -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted as hidden")
+	fmt.Fprintln(w, "      aliases for backward compatibility.")
 }
 
 // printDefaultsExcludingAliases mirrors flag.PrintDefaults but skips

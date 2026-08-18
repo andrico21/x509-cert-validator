@@ -148,7 +148,6 @@ func main() {
 	dnsName := &cfg.DNSName
 	enableCRL := &cfg.EnableCRL
 	enableAIA := &cfg.EnableAIA
-	createBundlePath := &cfg.CreateBundlePath
 	includeRoot := &cfg.IncludeRoot
 	usage := &cfg.Usage
 	showGraph := &cfg.ShowGraph
@@ -176,14 +175,11 @@ func main() {
 	ctx, cancelCtx := context.WithTimeout(context.Background(), DefaultGlobalTimeout)
 	defer cancelCtx()
 
-	// Mode dispatch: -inspect and -split are non-validating operations that
-	// share -cert input loading (file/dir/bundle/stdin/URL) but not the
-	// chain-building validate path below.
-	switch cfg.Mode {
-	case cli.ModeInspect:
+	// Mode dispatch: -inspect is a non-validating operation that shares -cert
+	// input loading (file/dir/bundle/stdin/URL) but not the chain-building
+	// validate path below.
+	if cfg.Mode == cli.ModeInspect {
 		os.Exit(runInspect(ctx, cfg))
-	case cli.ModeSplit:
-		os.Exit(runSplit(ctx, cfg))
 	}
 
 	// validate: the -cert target must be a single leaf, not a directory
@@ -402,38 +398,50 @@ func main() {
 
 	logNormal("✅ VALIDATION SUCCEEDED\n")
 
-	// --- 8. Create CA Bundle (FROM VERIFIED CHAIN(S)) ---
-	if *createBundlePath != "" {
-		logNormal("\n=== Creating CA Bundle at %s ===\n", *createBundlePath)
+	// --- 8. Export (from the verified chain) ---
+	if cfg.Export != "" {
+		logNormal("\n=== Exporting to %s (format=%s, scope=%s) ===\n", cfg.Export, cfg.ExportFormat, cfg.ExportScope)
 
 		if *includeRoot && rootSourceLabel != "Explicit User Root" {
-			logNormal("⚠️  WARNING: -includeRoot has no effect: roots come from %s (no explicit root file provided via -root).\n", rootSourceLabel)
-			logNormal("   System root certificates cannot be exported into the bundle. Use -root <file> to provide an explicit root.\n")
+			logNormal("⚠️  WARNING: -include-root has no effect: roots come from %s (no explicit root file provided via -root).\n", rootSourceLabel)
+			logNormal("   System root certificates cannot be exported. Use -root <file> to provide an explicit root.\n")
 		}
 
-		toBundle := bundle.FromVerifiedChains(chains, *includeRoot)
-
-		// If for some reason Go didn't return anything to bundle, fall back to what we discovered locally.
-		if len(toBundle) == 0 {
-			toBundle = bundle.FromDiscovered(discoveredIntermediates, rootCerts, *includeRoot)
-		}
-
-		if len(toBundle) == 0 {
-			logNormal("⚠️  No certificates available to bundle.\n")
-		} else {
-			written, rootsWritten, err := bundle.WritePEM(*createBundlePath, toBundle)
-			if err != nil {
-				logNormal("❌ Failed to create bundle file: %v\n", err)
-			} else {
-				if *includeRoot && rootsWritten > 0 {
-					logNormal("ℹ️  Included %d Root/Anchor certificate(s) in bundle.\n", rootsWritten)
-				}
-				logNormal("✅ Successfully bundled %d certificates. (Root Trust: %s)\n", written, rootSourceLabel)
+		var toExport []*x509.Certificate
+		if cfg.ExportScope == "all" {
+			// Every certificate across every verified path (deduped in exportCerts).
+			for _, ch := range chains {
+				toExport = append(toExport, ch...)
+			}
+		} else { // "ca": the CA trust chain (intermediates + optional root), excludes the leaf.
+			toExport = bundle.FromVerifiedChains(chains, *includeRoot)
+			if len(toExport) == 0 {
+				toExport = bundle.FromDiscovered(discoveredIntermediates, rootCerts, *includeRoot)
 			}
 		}
+		exportCerts(toExport, cfg)
 	}
 
 	// --- 9. Print Verified Chain(s) ---
+	// When Go returns more than one path it is because more than one certificate
+	// in the chain is trusted directly as an anchor (each trusted anchor yields a
+	// distinct valid path). Say so, otherwise multiple paths read like a glitch.
+	if len(chains) > 1 {
+		seen := map[string]bool{}
+		var anchors []string
+		for _, ch := range chains {
+			if len(ch) == 0 {
+				continue
+			}
+			name := x509util.CnOrDN(ch[len(ch)-1])
+			if !seen[name] {
+				seen[name] = true
+				anchors = append(anchors, name)
+			}
+		}
+		logNormal("\nℹ️  %d verified paths found: your trust store trusts %d certificate(s) in this chain directly as anchors (%s), so each yields a separate valid path.\n",
+			len(chains), len(anchors), strings.Join(anchors, ", "))
+	}
 	for i, chain := range chains {
 		logNormal("\n--- Verified Chain Path %d ---\n", i+1)
 		if *showGraph {

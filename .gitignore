@@ -33,6 +33,7 @@ go.work.sum
 
 # Local agent / planning workspace (not part of project)
 .sisyphus/
+.omo/
 
 # Built validator binary (Linux/macOS, no extension)
 /x509-cert-validator

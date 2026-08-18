@@ -918,11 +918,11 @@ add_test "22. Ultra Silent Mode" "PASS" "" \
 add_test "23. DER Format Input" "PASS" "VALIDATION SUCCEEDED" \
   "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.der -aia"
 
-add_test "24. Bundle: Create" "PASS" "Successfully bundled" \
-  "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia -createCAbundle ${BUNDLE_OUT}"
+add_test "24. Export: bundle (CA scope)" "PASS" "saved" \
+  "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia -export ${BUNDLE_OUT}"
 
-add_test "25. Bundle: IncludeRoot" "PASS" "Included.*Root.*certificate" \
-  "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia -createCAbundle ${BUNDLE_ROOT_OUT} -includeRoot"
+add_test "25. Export: bundle -include-root" "PASS" "2 certificate" \
+  "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia -export ${BUNDLE_ROOT_OUT} -include-root"
 
 add_test "26. Negative Size Limit" "FAIL" "size limits must be" \
   "${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -maxaia=-1"
@@ -939,7 +939,7 @@ add_test "29. Expiry NOTICE (short-lived)" "PASS" "NOTICE.*expires soon" \
 add_test "30. Root Trust Label" "PASS" "Root Trust: Explicit User Root" \
   "${TOOL_BIN} -root ${ROOT_CRT} -cert ${PKI}/leaf_valid.crt -aia"
 
-# ---- NEW TESTS (31..43): inspect / split / json / stdin / expiry gate ----
+# ---- NEW TESTS (31..43): inspect / export / json / stdin / expiry gate ----
 
 add_test "31. Inspect: table" "PASS" "Role" \
   "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt"
@@ -962,17 +962,17 @@ add_test "36. Validate: json failure" "FAIL" "\"ok\": false" \
 add_test "37. Inspect: stdin" "PASS" "Role" \
   "cat ${PKI}/leaf_valid.crt | ${TOOL_BIN} -inspect -cert -"
 
-add_test "38. Split: files" "PASS" "saved" \
-  "${TOOL_BIN} -split -cert ${INTER_PEM} -outdir ${TMP}/split_out"
+add_test "38. Export: split files (scope all)" "PASS" "saved" \
+  "${TOOL_BIN} -inspect -cert ${INTER_PEM} -export ${TMP}/split_out -export-format split -export-scope all"
 
-add_test "39. Split: json" "PASS" "\"count\"" \
-  "${TOOL_BIN} -split -json -cert ${INTER_PEM} -outdir ${TMP}/split_out_json"
+add_test "39. Export: bundle (scope all)" "PASS" "saved" \
+  "${TOOL_BIN} -inspect -cert ${INTER_PEM} -export ${TMP}/all_bundle.pem -export-scope all"
 
 add_test "40. Expiry gate: -fail-expired exit 2 (at future)" "FAIL" "" \
   "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt -at 2040-01-01T00:00:00Z -fail-expired -ultra-silent"
 
-add_test "41. Error: -inspect + -split" "FAIL" "one operation" \
-  "${TOOL_BIN} -inspect -split -cert ${PKI}/leaf_valid.crt"
+add_test "41. Error: bad -export-format" "FAIL" "export-format" \
+  "${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -export-format bogus"
 
 add_test "42. Error: -json + -silent" "FAIL" "one output format" \
   "${TOOL_BIN} -json -silent -cert ${PKI}/leaf_valid.crt"

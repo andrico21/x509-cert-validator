@@ -54,15 +54,21 @@ Usage of ./x509-cert-validator:
         Optional: Validate at RFC3339 time
   -cert string
         Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe).
-        Also accepts a directory of certs or "-" for stdin (inspect/split). Note: file:// is NOT supported.
-  -create-ca-bundle string
-        Optional: Path to create/export CA bundle. On success, exports from verified chain(s).
+        Also accepts a directory of certs or "-" for stdin (inspect). Note: file:// is NOT supported.
   -crl
         Enable certificate revocation checking (CRL)
   -days int
         Expiry warning threshold in days (default 30)
   -dns string
         Optional: Verify specific DNS name
+  -export string
+        Export destination: a file (bundle) or a directory (split). Empty = no export
+  -export-format string
+        Export format: bundle (one PEM file) or split (one file per cert) (default "bundle")
+  -export-name string
+        Split filename scheme: index or subject (default "index")
+  -export-scope string
+        Export scope: ca (CA chain, excludes leaf) or all (every cert) (default "ca")
   -fail-expired
         Exit code 2 if any evaluated certificate is expired
   -fail-expiring
@@ -72,7 +78,7 @@ Usage of ./x509-cert-validator:
   -full
         Inspect: show full per-certificate detail (implied by -json)
   -include-root
-        Include Root/Trust-Anchor certificate(s) in the generated bundle
+        Include the root/trust-anchor certificate in the export (ca scope)
   -inspect
         Inspect mode: describe certificate(s) without validating a chain
         (accepts file, directory, bundle, - for stdin, or URL)
@@ -88,8 +94,6 @@ Usage of ./x509-cert-validator:
         Max bytes to read from local cert file (default 1048576)
   -no-color
         Disable ANSI color in -inspect table output
-  -outdir string
-        Output directory for -split (default "certs")
   -root string
         Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).
   -show-graph
@@ -98,10 +102,6 @@ Usage of ./x509-cert-validator:
         Output only pass/fail status and cert ID
   -sni string
         Optional: Override TLS SNI for live HTTPS probes (https://...)
-  -split
-        Split mode: write each input certificate to its own file (see -outdir, -split-name)
-  -split-name string
-        Split file naming mode: index or subject (default "index")
   -type string
         Validation type: server, client, or any (default "any")
   -ultra-silent
@@ -109,9 +109,9 @@ Usage of ./x509-cert-validator:
   -version
         Print version and exit
 
-Note: Legacy camelCase aliases (-createCAbundle, -includeRoot, -showGraph,
--ultrasilent, -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted for
-backward compatibility but are hidden from help output.
+Note: Legacy camelCase aliases (-includeRoot, -showGraph, -ultrasilent,
+-maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted for backward
+compatibility but are hidden from help output.
 
 EXAMPLES:
   1. Live HTTPS Probe (Check server's current chain):
@@ -125,10 +125,10 @@ EXAMPLES:
      x509-cert-validator -cert client-cert.pem -type client
      x509-cert-validator -cert leaf.pem -crl
 
-  4. Fix Local Chain & Export Bundle:
-     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle full-chain.crt
-     Exporting Root CA (-include-root) requires explicit specification of root CA's certificate file (-root <filename>).
-     x509-cert-validator -cert leaf.pem -aia -create-ca-bundle bundle.crt -include-root -root custom-root-ca.crt
+  4. Validate and export the CA trust bundle (defaults: -export-format bundle, -export-scope ca):
+     x509-cert-validator -cert leaf.pem -aia -export full-chain.crt
+     Exporting the Root CA (-include-root) requires an explicit root file (-root <filename>).
+     x509-cert-validator -cert leaf.pem -aia -export bundle.crt -include-root -root custom-root-ca.crt
      (⚠️  SECURITY WARNING: This also exports the Root CA certificate.)
      (    Never install an unknown Root CA unless you know what you are doing)
      (    and have verified its fingerprint manually.)
@@ -145,7 +145,7 @@ EXAMPLES:
      x509-cert-validator -cert leaf.pem -ultra-silent
      (echo $?)
 
-  8. Structured JSON output (validate/inspect/split):
+  8. Structured JSON output (validate/inspect):
      x509-cert-validator -cert https://github.com -json
 
   9. Inspect certificate(s) without validating (file, directory, bundle, or - for stdin):
@@ -156,16 +156,16 @@ EXAMPLES:
   10. Expiry gate for cron/CI (exit 2 if expired; pairs with silent modes):
       x509-cert-validator -inspect -cert leaf.pem -days 30 -fail-expired -ultra-silent
 
-  11. Split a multi-cert bundle into individual files:
-      x509-cert-validator -split -cert bundle.pem -outdir out -split-name subject
+  11. Export as individual files instead of a bundle (-export-format split writes a directory):
+      x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all -export-name subject
 ```
 
-## Modes: inspect / split / JSON / expiry gate
+## Modes: inspect / export / JSON / expiry gate
 
 Chain **validation** is the default operation and every existing invocation keeps
-working unchanged. Layered on top are two additional operations (`-inspect`,
-`-split`), machine-readable `-json` output, and an expiry gate - all plain flags,
-no subcommands.
+working unchanged. Layered on top is an `-inspect` operation, an `-export` step
+(bundle or split, applied after validate or inspect), machine-readable `-json`
+output, and an expiry gate - all plain flags, no subcommands.
 
 All operations share the same `-cert` input, which now also accepts a
 **directory** of certificates or `-` for **stdin**, in addition to a file, an
@@ -175,7 +175,7 @@ All operations share the same `-cert` input, which now also accepts a
 |---|---|---|---|
 | *(default)* | validate | yes | prove a leaf chains to a trusted root |
 | `-inspect` | describe cert(s) | no | list/scan a bundle, directory, or endpoint |
-| `-split` | extract cert(s) | no | break a bundle into per-cert files |
+| `-export` | write cert(s) to disk | uses validate/inspect | save a CA bundle or split a bundle into per-cert files |
 
 **Exit codes:** `0` success · `1` error / invalid · `2` `-fail-expired` and a certificate is expired.
 
@@ -255,14 +255,28 @@ x509-cert-validator -inspect -cert leaf.pem -at 2040-01-01T00:00:00Z -fail-expir
 echo $?    # 2
 ```
 
-### `-split` - decompose a bundle into individual files
+### `-export` - write validated/inspected certificates to disk
 
-Writes each certificate in the input to its own PEM file under `-outdir`
-(default `certs`). `-split-name` chooses `index` (default → `NN_subject.crt`) or
-`subject` (→ `subject.crt`, de-duplicated with a `-N` suffix):
+`-export <dest>` writes certificates to disk on top of the current operation: in
+the default validate mode it exports the **verified** chain, and in `-inspect`
+mode it exports the loaded certificates. Two knobs control the shape:
+
+- `-export-format bundle` (default) concatenates the selected certs into the
+  single file `<dest>`; `-export-format split` writes one PEM file per cert into
+  the directory `<dest>`.
+- `-export-scope ca` (default) selects the CA chain and excludes the leaf (add
+  `-include-root` to also emit the root anchor); `-export-scope all` emits every
+  certificate.
+
+`-export-name` chooses split filenames: `index` (default → `NN_subject.crt`) or
+`subject` (→ `subject.crt`, de-duplicated with a `-N` suffix).
 
 ```shell
-x509-cert-validator -split -cert bundle.pem -outdir out
+# save the CA bundle needed to complete a leaf's chain (old -create-ca-bundle)
+x509-cert-validator -cert leaf.pem -aia -export ca-bundle.crt
+
+# split a bundle into one file per certificate (old -split)
+x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all
 ```
 
 ```
@@ -271,7 +285,7 @@ saved  out/01_test-issuing-ca.crt
 saved  out/02_test-root-ca.crt
 ```
 
-### `-json` - structured output (validate, inspect, split)
+### `-json` - structured output (validate, inspect)
 
 Add `-json` to emit a stable, machine-readable document instead of the human
 report (mutually exclusive with `-silent`/`-ultra-silent`) - ideal for scripting
@@ -333,24 +347,9 @@ objects with the identical shape shown above:
 }
 ```
 
-**`-split -json`** → a manifest of what was written:
-
-```shell
-x509-cert-validator -split -json -cert bundle.pem -outdir out -split-name subject
-```
-
-```json
-{
-  "input": "bundle.pem",
-  "outdir": "out",
-  "count": 3,
-  "written": [
-    { "file": "out/leaf-test-example-com.crt", "index": 0, "subject_cn": "leaf.test.example.com", "fingerprint_sha256": "9E5302A0..." },
-    { "file": "out/test-issuing-ca.crt", "index": 1, "subject_cn": "Test Issuing CA", "fingerprint_sha256": "1A40B93E..." },
-    { "file": "out/test-root-ca.crt", "index": 2, "subject_cn": "Test Root CA", "fingerprint_sha256": "32F85F65..." }
-  ]
-}
-```
+> `-export` writes PEM files as a side effect of validate/inspect. In `-json` mode
+> the export still runs, but the JSON document stays the validate/inspect payload -
+> there is no separate export manifest.
 
 #### JSON field reference
 
@@ -633,5 +632,5 @@ x509-cert-validator.exe -root C:\Temp\root.crt -cert C:\Temp\some-cert.crt -aia
 
 If root is reachable via AIA - it will be added to bundle with the following command:
 ```shell
-x509-cert-validator.exe -cert C:\Temp\cert.crt -aia -create-ca-bundle .\cabundle.crt -include-root
+x509-cert-validator.exe -cert C:\Temp\cert.crt -aia -export .\cabundle.crt -include-root
 ```

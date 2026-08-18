@@ -155,7 +155,6 @@ func TestParseAcceptsLegacyAliases(t *testing.T) {
 	// break users who scripted against the old flag names.
 	cfg, err := Parse([]string{
 		"-cert", "leaf.pem",
-		"-createCAbundle", "bundle.crt",
 		"-includeRoot",
 		"-showGraph",
 		"-maxaia", "1024",
@@ -165,9 +164,6 @@ func TestParseAcceptsLegacyAliases(t *testing.T) {
 	}, "test", io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.CreateBundlePath != "bundle.crt" {
-		t.Errorf("CreateBundlePath: got %q", cfg.CreateBundlePath)
 	}
 	if !cfg.IncludeRoot {
 		t.Error("IncludeRoot should be true")
@@ -304,11 +300,17 @@ func TestParseModeDefaultsToValidate(t *testing.T) {
 	if cfg.Days != 30 {
 		t.Errorf("Days default: got %d, want 30", cfg.Days)
 	}
-	if cfg.OutDir != "certs" {
-		t.Errorf("OutDir default: got %q, want certs", cfg.OutDir)
+	if cfg.Export != "" {
+		t.Errorf("Export default: got %q, want empty", cfg.Export)
 	}
-	if cfg.SplitName != "index" {
-		t.Errorf("SplitName default: got %q, want index", cfg.SplitName)
+	if cfg.ExportFormat != "bundle" {
+		t.Errorf("ExportFormat default: got %q, want bundle", cfg.ExportFormat)
+	}
+	if cfg.ExportScope != "ca" {
+		t.Errorf("ExportScope default: got %q, want ca", cfg.ExportScope)
+	}
+	if cfg.ExportName != "index" {
+		t.Errorf("ExportName default: got %q, want index", cfg.ExportName)
 	}
 }
 
@@ -328,16 +330,16 @@ func TestParseInspectMode(t *testing.T) {
 	}
 }
 
-func TestParseSplitMode(t *testing.T) {
-	cfg, err := Parse([]string{"-split", "-cert", "bundle.pem", "-outdir", "out", "-split-name", "subject"}, "test", io.Discard)
+func TestParseExport(t *testing.T) {
+	cfg, err := Parse([]string{"-inspect", "-cert", "bundle.pem", "-export", "out", "-export-format", "split", "-export-scope", "all", "-export-name", "subject"}, "test", io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Mode != ModeSplit {
-		t.Errorf("Mode: got %d, want ModeSplit", cfg.Mode)
+	if cfg.Export != "out" {
+		t.Errorf("Export: got %q, want out", cfg.Export)
 	}
-	if cfg.OutDir != "out" || cfg.SplitName != "subject" {
-		t.Errorf("split options: OutDir=%q SplitName=%q", cfg.OutDir, cfg.SplitName)
+	if cfg.ExportFormat != "split" || cfg.ExportScope != "all" || cfg.ExportName != "subject" {
+		t.Errorf("export options: Format=%q Scope=%q Name=%q", cfg.ExportFormat, cfg.ExportScope, cfg.ExportName)
 	}
 }
 
@@ -373,17 +375,6 @@ func TestParseFailExpiring(t *testing.T) {
 	}
 }
 
-func TestParseRejectsInspectAndSplit(t *testing.T) {
-	_, err := Parse([]string{"-inspect", "-split", "-cert", "x.pem"}, "test", io.Discard)
-	pe, ok := err.(*ParseError)
-	if !ok {
-		t.Fatalf("expected *ParseError, got %T: %v", err, err)
-	}
-	if pe.ExitCode != 1 || !strings.Contains(pe.Message, "one operation") {
-		t.Errorf("want exit 1 + 'one operation', got code=%d msg=%q", pe.ExitCode, pe.Message)
-	}
-}
-
 func TestParseRejectsMultipleOutputFormats(t *testing.T) {
 	for _, args := range [][]string{
 		{"-cert", "x.pem", "-json", "-silent"},
@@ -401,14 +392,24 @@ func TestParseRejectsMultipleOutputFormats(t *testing.T) {
 	}
 }
 
-func TestParseRejectsBadSplitName(t *testing.T) {
-	_, err := Parse([]string{"-split", "-cert", "x.pem", "-split-name", "bogus"}, "test", io.Discard)
-	pe, ok := err.(*ParseError)
-	if !ok {
-		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+func TestParseRejectsBadExportEnums(t *testing.T) {
+	cases := []struct {
+		args   []string
+		substr string
+	}{
+		{[]string{"-cert", "x.pem", "-export-format", "bogus"}, "export-format"},
+		{[]string{"-cert", "x.pem", "-export-scope", "bogus"}, "export-scope"},
+		{[]string{"-cert", "x.pem", "-export-name", "bogus"}, "export-name"},
 	}
-	if pe.ExitCode != 1 || !strings.Contains(pe.Message, "split-name") {
-		t.Errorf("want exit 1 + 'split-name', got code=%d msg=%q", pe.ExitCode, pe.Message)
+	for _, c := range cases {
+		_, err := Parse(c.args, "test", io.Discard)
+		pe, ok := err.(*ParseError)
+		if !ok {
+			t.Fatalf("args %v: expected *ParseError, got %T: %v", c.args, err, err)
+		}
+		if pe.ExitCode != 1 || !strings.Contains(pe.Message, c.substr) {
+			t.Errorf("args %v: want exit 1 + %q, got code=%d msg=%q", c.args, c.substr, pe.ExitCode, pe.Message)
+		}
 	}
 }
 

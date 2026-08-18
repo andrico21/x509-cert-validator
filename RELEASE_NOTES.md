@@ -1,45 +1,51 @@
-# 1.4.0 - Inspect, split, JSON output, and an expiry gate
+# 1.5.0 - Unified `-export` (replaces `-split` and `-create-ca-bundle`)
 
-A feature release adding three ergonomic I/O capabilities alongside the chain validator. Everything is a plain flag - no subcommands - and the default `validate` behavior is unchanged, so every existing invocation and script keeps working.
+A breaking release that consolidates the two overlapping "write certificates to disk" features into a single `-export` interface. The default `validate` behavior and every other flag are unchanged.
 
-## New: operations
+## Breaking changes
 
-- **`-inspect`** - describe certificate(s) without validating a chain. Colour-coded summary table (role, subject, issuer, expiry status, SHA-256); `-full` adds a per-cert detail block. Accepts a file, a **directory**, a multi-cert bundle, `-` for **stdin**, or an `http(s)://` URL.
-- **`-split`** - decompose a bundle (or directory/stdin) into one PEM file per certificate under `-outdir` (default `certs`); `-split-name` picks `index` (default) or `subject` naming.
+- Removed `-create-ca-bundle`, `-split`, `-outdir`, `-split-name`, and the hidden `-createCAbundle` alias. Use `-export` and its options instead.
 
-## New: output & expiry
+## New: unified `-export`
 
-- **`-json`** - stable machine-readable output for all three operations (validate → verdict + leaf + chains + expiry; inspect → cert array; split → written-files manifest). Mutually exclusive with `-silent`/`-ultra-silent`.
-- **`-days N` + `-fail-expired`** - expiry gate; `-days` sets the "expiring" window (default 30), `-fail-expired` makes the process **exit 2** if any cert is expired. Pairs with `-ultra-silent` for a pure exit-code check in cron/CI.
-- **`-no-color`** (and `NO_COLOR`) disable ANSI colour in the inspect table.
+`-export <dest>` writes certificates to disk on top of the current operation: in the default `validate` mode it exports the verified chain; with `-inspect` it exports the loaded certificates.
 
-## New: input sources
+- `-export <dest>` selects a file (bundle) or a directory (split).
+- `-export-format bundle|split` writes one concatenated PEM file (default) or one file per certificate.
+- `-export-scope ca|all` selects the CA chain excluding the leaf (default) or every certificate.
+- `-export-name index|subject` picks the split filename scheme: `NN_subject.crt` (default) or `subject.crt` (de-duplicated with a `-N` suffix).
+- `-include-root` also emits the root/trust-anchor in `ca` scope (still requires an explicit `-root`).
 
-`-cert` now also accepts a **directory** and `-` for **stdin**, in addition to file / `http(s)://` download / `https://` live probe. (Validation still needs a single leaf; directory input is for `-inspect`/`-split`.)
+## Migration
+
+| Old | New |
+|---|---|
+| `-create-ca-bundle out.pem` | `-export out.pem` |
+| `-create-ca-bundle out.pem -include-root -root root.pem` | `-export out.pem -include-root -root root.pem` |
+| `-split -cert b.pem -outdir out` | `-inspect -cert b.pem -export out -export-format split -export-scope all` |
+| `-split ... -split-name subject` | `... -export-format split -export-name subject` |
+
+## Other changes
+
+- Validate output prints a one-line explanation when multiple verified paths are found (a directly trusted anchor inside the chain yields a separate valid path).
+- `-json` no longer emits a split manifest. In `-json` mode the export still writes its files while the JSON document stays the validate/inspect payload.
 
 ## Exit codes
 
-`0` success · `1` error / invalid · `2` `-fail-expired` and a certificate is expired.
-
-## Internals / tests
-
-- New `internal/certinfo` package: the machine-readable `CertInfo` view shared by JSON and table renderers, so human and machine output never drift.
-- Parse-time validation rejects conflicting flags (`-inspect`+`-split`, more than one output format, an unknown `-split-name`).
-- Unit tests for `internal/certinfo` and the new CLI flags; `tests.sh` extended to 43 scenarios (inspect/split/json/stdin/expiry/error cases 31-43).
-- Toolchain/CI: Go directive 1.26.6, gosec 2.28.0, `actions/checkout`/`setup-go` v7.
+`0` success, `1` error / invalid, `2` an expiry gate (`-fail-expired` / `-fail-expiring`) tripped.
 
 ## Backward compatibility
 
-The default `validate` operation and its full flag surface are unchanged; legacy camelCase aliases (`-createCAbundle`, `-includeRoot`, `-showGraph`, `-ultrasilent`, `-maxaia`, `-maxcrl`, `-maxlocal`, `-maxcert`) still work as hidden aliases. The new flags are purely additive.
+The remaining legacy camelCase aliases (`-includeRoot`, `-showGraph`, `-ultrasilent`, `-maxaia`, `-maxcrl`, `-maxlocal`, `-maxcert`) still work as hidden aliases.
 
 ## Build
 
 ```shell
 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.4.0" \
+  -ldflags="-s -w -X main.version=1.5.0" \
   -o ./x509-cert-validator ./cmd/x509-cert-validator
 ```
 
 ## Verification
 
-`go test ./...` plus the 43-scenario `tests.sh` integration suite. All CI gates green: gofmt, vet, staticcheck, gosec 2.28.0, govulncheck, unit tests, and the openssl-backed integration suite.
+`go test ./...` plus the `tests.sh` integration suite. All CI gates green: gofmt, vet, staticcheck, gosec, govulncheck, unit tests, and the openssl-backed integration suite.

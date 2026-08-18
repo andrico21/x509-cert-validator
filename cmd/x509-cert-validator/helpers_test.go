@@ -413,7 +413,7 @@ func TestBuildBundleFromDiscovered(t *testing.T) {
 // Step I (cli extraction). Their unit tests will be re-introduced in
 // internal/cli/cli_test.go during Step K (test split). End-to-end alias
 // behavior is covered today by tests.sh which exercises every legacy
-// spelling (-createCAbundle, -includeRoot, -showGraph, -ultrasilent,
+// spelling (-includeRoot, -showGraph, -ultrasilent,
 // -maxaia, -maxcrl, -maxlocal, -maxcert).
 
 // ============================================================================

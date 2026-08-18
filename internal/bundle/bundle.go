@@ -84,7 +84,7 @@ func FromDiscovered(inters []*x509.Certificate, roots []*x509.Certificate, inclu
 // never see stale partial output. Returns the count of certificates
 // written and the subset of those that were self-signed (roots).
 func WritePEM(path string, certs []*x509.Certificate) (written int, rootsWritten int, err error) {
-	// #nosec G304 -- the output path is user-supplied by design (-create-ca-bundle <path>).
+	// #nosec G304 -- the output path is user-supplied by design (-export <path>).
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return 0, 0, err
