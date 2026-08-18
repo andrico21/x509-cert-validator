@@ -47,7 +47,7 @@ jobs:
       - name: gosec
         run: |
           curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.22.5
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.28.0
           "$(go env GOPATH)/bin/gosec" -quiet ./...
 
   build:

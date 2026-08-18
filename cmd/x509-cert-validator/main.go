@@ -833,12 +833,14 @@ func downloadCertFile(ctx context.Context, urlStr string) []*x509.Certificate {
 	fetchCtx, cancel := context.WithTimeout(ctx, DefaultHTTPTimeout)
 	defer cancel()
 
+	// #nosec G704 -- SSRF by design: this local CLI fetches user-supplied certificate/AIA URLs. Scheme is restricted to http/https above, with timeouts, redirect caps, and a response size limit.
 	req, err := http.NewRequestWithContext(fetchCtx, "GET", urlStr, nil)
 	if err != nil {
 		exitErr(fmt.Errorf("request creation failed: %v", err))
 	}
 	req.Header.Set("User-Agent", "x509-cert-validator/1.0")
 
+	// #nosec G704 -- SSRF by design: request targets the user-supplied http/https URL intentionally (see note above).
 	resp, err := client.Do(req)
 	if err != nil {
 		exitErr(fmt.Errorf("download failed: %v", err))
@@ -857,7 +859,7 @@ func downloadCertFile(ctx context.Context, urlStr string) []*x509.Certificate {
 }
 
 func loadLocalFile(path string) []*x509.Certificate {
-	// #nosec G304 -- this tool's purpose is to read user-specified certificate files (-cert, -root); the path being a variable is by design.
+	// #nosec G304 G703 -- this tool's purpose is to read user-specified certificate files (-cert, -root); the path being a variable is by design.
 	f, err := os.Open(path)
 	if err != nil {
 		exitErr(fmt.Errorf("read error (%s): %v", path, err))
