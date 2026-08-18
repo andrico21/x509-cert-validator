@@ -341,6 +341,38 @@ func TestParseSplitMode(t *testing.T) {
 	}
 }
 
+func TestParseFailExpiring(t *testing.T) {
+	// -fail-expiring parses independently and coexists with -fail-expired.
+	cfg, err := Parse([]string{"-inspect", "-cert", "b.pem", "-days", "30", "-fail-expiring"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.FailExpiring {
+		t.Error("FailExpiring: want true")
+	}
+	if cfg.FailExpired {
+		t.Error("FailExpired: want false when only -fail-expiring given")
+	}
+
+	// Both gates together is allowed (no mutual exclusion).
+	both, err := Parse([]string{"-inspect", "-cert", "b.pem", "-fail-expired", "-fail-expiring"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("both gates: unexpected error: %v", err)
+	}
+	if !both.FailExpired || !both.FailExpiring {
+		t.Errorf("both gates: want FailExpired && FailExpiring, got %+v", both)
+	}
+
+	// Default is off.
+	def, err := Parse([]string{"-cert", "b.pem"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("default: unexpected error: %v", err)
+	}
+	if def.FailExpiring {
+		t.Error("FailExpiring default: want false")
+	}
+}
+
 func TestParseRejectsInspectAndSplit(t *testing.T) {
 	_, err := Parse([]string{"-inspect", "-split", "-cert", "x.pem"}, "test", io.Discard)
 	pe, ok := err.(*ParseError)

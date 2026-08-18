@@ -76,9 +76,10 @@ func runSplit(ctx context.Context, cfg *cli.Config) int {
 		}
 	}
 
-	if cfg.FailExpired {
+	if cfg.FailExpired || cfg.FailExpiring {
 		for i, c := range certs {
-			if certinfo.FromCert(c, i, validationTime, cfg.Days).Expired {
+			info := certinfo.FromCert(c, i, validationTime, cfg.Days)
+			if (cfg.FailExpired && info.Expired) || (cfg.FailExpiring && (info.Expired || info.Expiring)) {
 				return 2
 			}
 		}

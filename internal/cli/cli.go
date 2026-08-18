@@ -92,14 +92,15 @@ type Config struct {
 	// Operation mode + inspect/split/output options (certinspect feature
 	// port). Default Mode is ModeValidate; every field below is additive
 	// and leaves the legacy validate path unchanged when unset.
-	Mode        Mode
-	JSON        bool   // -json: machine-readable output
-	NoColor     bool   // -no-color: disable ANSI color in inspect table
-	Full        bool   // -full: inspect full per-certificate detail
-	Days        int    // -days: expiry warning threshold (days)
-	FailExpired bool   // -fail-expired: exit 2 if any evaluated cert expired
-	OutDir      string // -outdir: output directory for -split
-	SplitName   string // -split-name: "index" | "subject"
+	Mode         Mode
+	JSON         bool   // -json: machine-readable output
+	NoColor      bool   // -no-color: disable ANSI color in inspect table
+	Full         bool   // -full: inspect full per-certificate detail
+	Days         int    // -days: expiry warning threshold (days)
+	FailExpired  bool   // -fail-expired: exit 2 if any evaluated cert expired
+	FailExpiring bool   // -fail-expiring: exit 2 if any cert is within -days (or already expired)
+	OutDir       string // -outdir: output directory for -split
+	SplitName    string // -split-name: "index" | "subject"
 
 	// Positional intermediates (CLI args after flags)
 	IntermediateArgs []string
@@ -166,6 +167,7 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	full := fs.Bool("full", false, "Inspect: show full per-certificate detail (implied by -json)")
 	days := fs.Int("days", 30, "Expiry warning threshold in days")
 	failExpired := fs.Bool("fail-expired", false, "Exit code 2 if any evaluated certificate is expired")
+	failExpiring := fs.Bool("fail-expiring", false, "Exit code 2 if any evaluated certificate is expiring within -days (or already expired)")
 	outDir := fs.String("outdir", "certs", "Output directory for -split")
 	splitName := fs.String("split-name", "index", "Split file naming mode: index or subject")
 
@@ -219,6 +221,7 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		Full:             *full,
 		Days:             *days,
 		FailExpired:      *failExpired,
+		FailExpiring:     *failExpiring,
 		OutDir:           *outDir,
 		SplitName:        *splitName,
 		IntermediateArgs: fs.Args(),

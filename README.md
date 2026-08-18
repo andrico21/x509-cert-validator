@@ -65,6 +65,8 @@ Usage of ./x509-cert-validator:
         Optional: Verify specific DNS name
   -fail-expired
         Exit code 2 if any evaluated certificate is expired
+  -fail-expiring
+        Exit code 2 if any evaluated certificate is expiring within -days (or already expired)
   -fp-show-all
         Show alternative fingerprint algo values (+MD5, SHA-384, SHA-512)
   -full
@@ -162,7 +164,7 @@ EXAMPLES:
 
 Chain **validation** is the default operation and every existing invocation keeps
 working unchanged. Layered on top are two additional operations (`-inspect`,
-`-split`), machine-readable `-json` output, and an expiry gate — all plain flags,
+`-split`), machine-readable `-json` output, and an expiry gate - all plain flags,
 no subcommands.
 
 All operations share the same `-cert` input, which now also accepts a
@@ -179,7 +181,7 @@ All operations share the same `-cert` input, which now also accepts a
 
 **Output formats** (mutually exclusive): default human · `-json` · `-silent` · `-ultra-silent`. `-no-color` is an extra modifier for the inspect table.
 
-### `-inspect` — describe certificate(s), no chain validation
+### `-inspect` - describe certificate(s), no chain validation
 
 Prints a summary table of every certificate in the input:
 
@@ -234,20 +236,26 @@ AIA CA issuers    http://pki.test.example.com/aia/issuing-ca.crt
 CRL distribution  http://pki.test.example.com/crl/issuing-ca.crl
 ```
 
-### Expiry gate — `-days N` + `-fail-expired`
+### Expiry gate - `-days N` + `-fail-expired` / `-fail-expiring`
 
-`-days` sets the "expiring" warning window (default 30); `-fail-expired` makes the
-process exit **2** if any evaluated certificate is expired. Combined with a silent
-mode it becomes a pure exit-code check for cron/CI — no output, just a status.
-`-at` lets you test against a future date:
+`-days` sets the "expiring" window (default 30). Two gate flags turn that window into a process exit code, so a scan can fail cron/CI:
+
+- `-fail-expired` exits **2** only once a certificate is actually past its `Not After`.
+- `-fail-expiring` exits **2** if any certificate is within `-days` of expiry (or already expired). This is the proactive alarm: it fails while there is still lead time to renew, which `-fail-expired` cannot do.
+
+Both pair with a silent mode for a pure exit-code check (no output):
 
 ```shell
-# 0 = all valid, 2 = something expired. Here we ask "will it be expired in 2040?"
+# renewal alarm: fail while any cert is within 30 days of expiry
+x509-cert-validator -inspect -cert ./ca-dir -days 30 -fail-expiring -ultra-silent
+echo $?    # 0 = all outside the window, 2 = at least one expiring or expired
+
+# `-fail-expired` trips only once expired; `-at` lets you test a future date
 x509-cert-validator -inspect -cert leaf.pem -at 2040-01-01T00:00:00Z -fail-expired -ultra-silent
-echo $?    # -> 2
+echo $?    # 2
 ```
 
-### `-split` — decompose a bundle into individual files
+### `-split` - decompose a bundle into individual files
 
 Writes each certificate in the input to its own PEM file under `-outdir`
 (default `certs`). `-split-name` chooses `index` (default → `NN_subject.crt`) or
@@ -263,10 +271,10 @@ saved  out/01_test-issuing-ca.crt
 saved  out/02_test-root-ca.crt
 ```
 
-### `-json` — structured output (validate, inspect, split)
+### `-json` - structured output (validate, inspect, split)
 
 Add `-json` to emit a stable, machine-readable document instead of the human
-report (mutually exclusive with `-silent`/`-ultra-silent`) — ideal for scripting
+report (mutually exclusive with `-silent`/`-ultra-silent`) - ideal for scripting
 expiry checks, extracting fingerprints, or feeding a pipeline.
 
 **`-inspect -json`** → an array of certificate objects:
@@ -308,7 +316,7 @@ x509-cert-validator -inspect -json -cert leaf.pem
 
 **`-json` validate** → the verdict, the leaf, every verified path, and the
 leaf-expiry summary. On failure `ok` is `false` and `error` carries the reason.
-Abbreviated below — `leaf` and each `chains[][]` entry are full `CertInfo`
+Abbreviated below - `leaf` and each `chains[][]` entry are full `CertInfo`
 objects with the identical shape shown above:
 
 ```json
@@ -368,7 +376,7 @@ Every certificate object (an inspect array element, or validate `leaf` /
 | `aia_ca_issuers`, `crl_distribution_points` | []string | omitted when empty |
 
 > Compatibility: the inspect array is a superset of the sibling `certinspect`
-> tool's `--json` (same field names, plus `expired`/`expiring`). The validate and
+> tool's JSON output (same field names, plus `expired`/`expiring`). The validate and
 > split documents are specific to this tool.
 
 ## Validating of sample certificate (from Go website) - from file

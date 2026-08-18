@@ -448,7 +448,7 @@ func TestVerifyFailureHintKeyUsageBeatsAlgoFlags(t *testing.T) {
 
 func TestVerifyFailureHintUnsupportedAlgoOnGenericError(t *testing.T) {
 	// GOST-intermediate case: verify fails generically ("unknown
-	// authority") while loading flagged an unsupported algorithm — the
+	// authority") while loading flagged an unsupported algorithm - the
 	// algo hint must still fire (before the authority tip).
 	err := errors.New("x509: certificate signed by unknown authority")
 	got := hintText(verifyFailureHint(err, nil, true, false, "leaf.pem", "root.pem", "any"))

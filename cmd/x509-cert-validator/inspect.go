@@ -48,7 +48,7 @@ func runInspect(ctx context.Context, cfg *cli.Config) int {
 		// (useful as a pure -fail-expired gate).
 	}
 
-	if cfg.FailExpired && anyExpiredInfo(infos) {
+	if (cfg.FailExpired && anyExpiredInfo(infos)) || (cfg.FailExpiring && anyExpiringInfo(infos)) {
 		return 2
 	}
 	return 0
@@ -57,6 +57,18 @@ func runInspect(ctx context.Context, cfg *cli.Config) int {
 func anyExpiredInfo(infos []certinfo.CertInfo) bool {
 	for _, in := range infos {
 		if in.Expired {
+			return true
+		}
+	}
+	return false
+}
+
+// anyExpiringInfo reports whether any certificate is within the -days window
+// (Expiring) or already past due (Expired) - the trigger for -fail-expiring,
+// which is a strict superset of -fail-expired.
+func anyExpiringInfo(infos []certinfo.CertInfo) bool {
+	for _, in := range infos {
+		if in.Expired || in.Expiring {
 			return true
 		}
 	}

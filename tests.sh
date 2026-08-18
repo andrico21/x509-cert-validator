@@ -980,6 +980,12 @@ add_test "42. Error: -json + -silent" "FAIL" "one output format" \
 add_test "43. Validate: directory input rejected" "FAIL" "directory input requires" \
   "${TOOL_BIN} -cert ${PKI}"
 
+add_test "44. Expiry gate: -fail-expiring within window (exit 2)" "FAIL" "" \
+  "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt -days 5000 -fail-expiring -ultra-silent"
+
+add_test "45. Expiry gate: -fail-expiring outside window (exit 0)" "PASS" "" \
+  "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt -days 1 -fail-expiring -ultra-silent"
+
 # ---- End of test definitions ----
 
 run_all_tests
