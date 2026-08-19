@@ -182,6 +182,15 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 		"maxcert":     "max-cert",
 	})
 
+	// Help precedence: a standalone -h/-help/--help/-?/--? anywhere in
+	// args must show help and exit 0, even when positioned where the
+	// flag parser would otherwise swallow it as a string flag's value
+	// (e.g. "-export -?" or "-cert -h"). This MUST run before fs.Parse.
+	if helpRequested(args) {
+		writeUsage(usageOut, progName, fs)
+		return nil, &ParseError{Message: "", ExitCode: 0}
+	}
+
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// -h/--help: the fs.Usage closure already rendered the full
@@ -348,9 +357,28 @@ func normalizeSNI(raw string) string {
 	return s
 }
 
+// helpRequested reports whether args contains a standalone help token
+// (-h, -help, --help, -?, --?) before any "--" terminator. It runs
+// BEFORE flag parsing so a help token positioned as the value of a
+// string flag (e.g. "-export -?") still triggers help instead of being
+// swallowed as that flag's value.
+func helpRequested(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		switch a {
+		case "-h", "-help", "--help", "-?", "--?":
+			return true
+		}
+	}
+	return false
+}
+
 // bindAliases attaches each alias name to the flag.Value of its
-// canonical counterpart in fs. Aliases are flagged as deprecated in
-// usage but still update the same underlying memory.
+// canonical counterpart in fs. The alias Usage string marks it "alias
+// for -X" so printDefaultsExcludingAliases hides it from -h; the alias
+// is silently accepted but never shown in help.
 func bindAliases(fs *flag.FlagSet, aliases map[string]string) {
 	for alias, canonical := range aliases {
 		canonFlag := fs.Lookup(canonical)
@@ -364,9 +392,9 @@ func bindAliases(fs *flag.FlagSet, aliases map[string]string) {
 	}
 }
 
-// writeUsage renders the canonical -h output to w. It mirrors the
-// legacy flag.Usage closure verbatim including the "EXAMPLES:" block
-// and the trailing aliases note so tests.sh -h diffs remain stable.
+// writeUsage renders the canonical -h output to w: the flag list
+// (excluding hidden backward-compat aliases) followed by the "EXAMPLES:"
+// block. Backward-compat aliases are silently accepted but never shown.
 func writeUsage(w io.Writer, progName string, fs *flag.FlagSet) {
 	fmt.Fprintf(w, "Usage of %s:\n", progName)
 	printDefaultsExcludingAliases(w, fs)
@@ -415,10 +443,6 @@ func writeUsage(w io.Writer, progName string, fs *flag.FlagSet) {
 
 	fmt.Fprintln(w, "\n  11. Export as individual files instead of a bundle (-export-format split writes a directory):")
 	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all -export-name subject")
-
-	fmt.Fprintln(w, "\nNote: legacy flag names (e.g. -includeRoot, -showGraph, -ultrasilent,")
-	fmt.Fprintln(w, "      -maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted as hidden")
-	fmt.Fprintln(w, "      aliases for backward compatibility.")
 }
 
 // printDefaultsExcludingAliases mirrors flag.PrintDefaults but skips

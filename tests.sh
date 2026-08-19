@@ -986,6 +986,20 @@ add_test "44. Expiry gate: -fail-expiring within window (exit 2)" "FAIL" "" \
 add_test "45. Expiry gate: -fail-expiring outside window (exit 0)" "PASS" "" \
   "${TOOL_BIN} -inspect -cert ${PKI}/leaf_valid.crt -days 1 -fail-expiring -ultra-silent"
 
+# ---- NEW TESTS (46..49): help precedence (-h / -? always show help, never the flow) ----
+
+add_test "46. Help: -h shows usage (exit 0)" "PASS" "Usage of" \
+  "${TOOL_BIN} -h"
+
+add_test "47. Help: -? shows usage (exit 0)" "PASS" "Usage of" \
+  "${TOOL_BIN} '-?'"
+
+add_test "48. Help: -export -? shows help, not the export flow" "PASS" "EXAMPLES" \
+  "${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -export '-?'"
+
+add_test "49. Help: -h output omits legacy-alias note" "PASS" "NO_ALIAS_NOTE" \
+  "${TOOL_BIN} -h 2>&1 | grep -Eq 'legacy flag|hidden alias|remain accepted' || echo NO_ALIAS_NOTE"
+
 # ---- End of test definitions ----
 
 run_all_tests

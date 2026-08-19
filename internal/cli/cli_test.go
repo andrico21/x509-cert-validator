@@ -239,6 +239,77 @@ func TestParseHelpExitsZero(t *testing.T) {
 	}
 }
 
+func TestParseHelpTokensAllExitZero(t *testing.T) {
+	for _, tok := range []string{"-h", "-help", "--help", "-?", "--?"} {
+		var buf strings.Builder
+		_, err := Parse([]string{tok}, "test", &buf)
+		pe, ok := err.(*ParseError)
+		if !ok {
+			t.Fatalf("%s: expected *ParseError, got %T: %v", tok, err, err)
+		}
+		if pe.ExitCode != 0 || pe.Message != "" {
+			t.Errorf("%s: want exit 0 + empty message, got code=%d msg=%q", tok, pe.ExitCode, pe.Message)
+		}
+		if !strings.Contains(buf.String(), "Usage of") {
+			t.Errorf("%s: usage text not rendered", tok)
+		}
+	}
+}
+
+// Regression: a help token positioned where a string flag would
+// otherwise swallow it as its value (e.g. "-export -?", "-cert -h")
+// must still show help and exit 0 - never fall through to the flow.
+func TestParseHelpBeatsValueFlag(t *testing.T) {
+	cases := [][]string{
+		{"-cert", "https://example.com", "-dns", "example.com", "-export", "-?"},
+		{"-export", "-h"},
+		{"-cert", "-h"},
+		{"-inspect", "-cert", "bundle.pem", "-?"},
+	}
+	for _, args := range cases {
+		var buf strings.Builder
+		cfg, err := Parse(args, "test", &buf)
+		if cfg != nil {
+			t.Errorf("%v: expected no Config (help path), got %+v", args, cfg)
+		}
+		pe, ok := err.(*ParseError)
+		if !ok {
+			t.Fatalf("%v: expected *ParseError, got %T: %v", args, err, err)
+		}
+		if pe.ExitCode != 0 {
+			t.Errorf("%v: want exit 0 (help), got %d", args, pe.ExitCode)
+		}
+		if !strings.Contains(buf.String(), "Usage of") {
+			t.Errorf("%v: usage text not rendered", args)
+		}
+	}
+}
+
+// A help token after the "--" terminator is a positional argument,
+// not a help request.
+func TestParseHelpTokenAfterTerminatorIsPositional(t *testing.T) {
+	var buf strings.Builder
+	cfg, err := Parse([]string{"-cert", "x.pem", "--", "-?"}, "test", &buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.IntermediateArgs) != 1 || cfg.IntermediateArgs[0] != "-?" {
+		t.Errorf("expected -? as positional after --, got %v", cfg.IntermediateArgs)
+	}
+}
+
+// The -h output must not advertise the hidden backward-compat aliases.
+func TestUsageOmitsLegacyAliasNote(t *testing.T) {
+	var buf strings.Builder
+	_, _ = Parse([]string{"-h"}, "test", &buf)
+	out := buf.String()
+	for _, needle := range []string{"alias", "legacy", "includeRoot", "showGraph", "ultrasilent", "backward"} {
+		if strings.Contains(out, needle) {
+			t.Errorf("help output must not mention hidden aliases; found %q in:\n%s", needle, out)
+		}
+	}
+}
+
 func TestParseUnknownFlagExitsTwo(t *testing.T) {
 	var buf strings.Builder
 	_, err := Parse([]string{"-bogus"}, "test", &buf)

@@ -15,19 +15,19 @@ AI-assisted written code, however it's well-tested.
 # Development
 go build -o ./x509-cert-validator ./cmd/x509-cert-validator
 
-# Production (v1.3.0)
+# Production (1.5.0)
 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.3.0" \
+  -ldflags="-s -w -X main.version=1.5.0" \
   -o ./x509-cert-validator ./cmd/x509-cert-validator
 
 # Production + FIPS
 GOEXPERIMENT=boringcrypto go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.3.0" \
+  -ldflags="-s -w -X main.version=1.5.0" \
   -o ./x509-cert-validator ./cmd/x509-cert-validator
 
 # Cross-compile (e.g. Linux ARM64)
 GOOS=linux GOARCH=arm64 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.3.0" \
+  -ldflags="-s -w -X main.version=1.5.0" \
   -o ./x509-cert-validator-linux-arm64 ./cmd/x509-cert-validator
 ```
 
@@ -108,10 +108,6 @@ Usage of ./x509-cert-validator:
         No output, exit code only (0=Pass, 1=Fail)
   -version
         Print version and exit
-
-Note: Legacy camelCase aliases (-includeRoot, -showGraph, -ultrasilent,
--maxaia, -maxcrl, -maxlocal, -maxcert) remain accepted for backward
-compatibility but are hidden from help output.
 
 EXAMPLES:
   1. Live HTTPS Probe (Check server's current chain):
@@ -375,8 +371,8 @@ Every certificate object (an inspect array element, or validate `leaf` /
 | `aia_ca_issuers`, `crl_distribution_points` | []string | omitted when empty |
 
 > Compatibility: the inspect array is a superset of the sibling `certinspect`
-> tool's JSON output (same field names, plus `expired`/`expiring`). The validate and
-> split documents are specific to this tool.
+> tool's JSON output (same field names, plus `expired`/`expiring`). The validate
+> document is specific to this tool.
 
 ## Validating of sample certificate (from Go website) - from file
 ```shell
@@ -531,6 +527,8 @@ CRL DPs:     [http://c.pki.goog/wr2/oBFYYahzgVI.crl]
 === Verifying Chain ===
 Root Trust: System Trust Store
 ✅ VALIDATION SUCCEEDED
+
+ℹ️  2 verified paths found: your trust store trusts 2 certificate(s) in this chain directly as anchors (GTS Root R1, GlobalSign Root CA), so each yields a separate valid path.
 
 --- Verified Chain Path 1 ---
 

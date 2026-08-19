@@ -4,7 +4,7 @@ A breaking release that consolidates the two overlapping "write certificates to 
 
 ## Breaking changes
 
-- Removed `-create-ca-bundle`, `-split`, `-outdir`, `-split-name`, and the hidden `-createCAbundle` alias. Use `-export` and its options instead.
+- Removed `-create-ca-bundle`, `-split`, `-outdir`, `-split-name`. Use `-export` and its options instead.
 
 ## New: unified `-export`
 
@@ -33,10 +33,6 @@ A breaking release that consolidates the two overlapping "write certificates to 
 ## Exit codes
 
 `0` success, `1` error / invalid, `2` an expiry gate (`-fail-expired` / `-fail-expiring`) tripped.
-
-## Backward compatibility
-
-The remaining legacy camelCase aliases (`-includeRoot`, `-showGraph`, `-ultrasilent`, `-maxaia`, `-maxcrl`, `-maxlocal`, `-maxcert`) still work as hidden aliases.
 
 ## Build
 
