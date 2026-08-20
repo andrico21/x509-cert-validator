@@ -10,6 +10,7 @@ import (
 	"github.com/andrico21/x509-cert-validator/internal/certinfo"
 	"github.com/andrico21/x509-cert-validator/internal/cli"
 	"github.com/andrico21/x509-cert-validator/internal/display"
+	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
 // runInspect implements the -inspect operation: describe the certificate(s)
@@ -49,27 +50,71 @@ func runInspect(ctx context.Context, cfg *cli.Config) int {
 		// (useful as a pure -fail-expired gate).
 	}
 
-	// -export writes the loaded certs to disk. Scope "ca" keeps only CA
-	// certificates (inspect has no verified chain to derive a bundle from);
-	// scope "all" writes every loaded certificate.
+	// -export writes the loaded certs to disk. Scope "all" writes every
+	// loaded certificate; scope "ca" keeps only CA certificates and, to
+	// match validate mode, excludes self-signed roots unless -include-root
+	// is set. inspect has no verified chain, so it can only export what it
+	// loaded, and a TLS server never sends the trust-anchor root.
 	if cfg.Export != "" {
-		toExport := certs
-		if cfg.ExportScope == "ca" {
-			var cas []*x509.Certificate
-			for _, c := range certs {
-				if c.IsCA {
-					cas = append(cas, c)
-				}
-			}
-			toExport = cas
-		}
+		toExport := selectInspectExport(certs, cfg)
 		exportCerts(toExport, cfg)
+		inspectExportHint(certs, toExport, cfg)
 	}
 
 	if (cfg.FailExpired && anyExpiredInfo(infos)) || (cfg.FailExpiring && anyExpiringInfo(infos)) {
 		return 2
 	}
 	return 0
+}
+
+// selectInspectExport applies -export-scope (and -include-root for "ca")
+// to the loaded certificates. "all" returns every loaded cert; "ca"
+// returns CA certificates, excluding self-signed roots unless -include-root
+// is set - mirroring validate mode's CA-scope semantics so the flags mean
+// the same thing in both modes.
+func selectInspectExport(certs []*x509.Certificate, cfg *cli.Config) []*x509.Certificate {
+	if cfg.ExportScope != "ca" {
+		return certs
+	}
+	var out []*x509.Certificate
+	for _, c := range certs {
+		if !c.IsCA {
+			continue
+		}
+		if x509util.IsSelfSigned(c) && !cfg.IncludeRoot {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// inspectExportHint explains, in one line, why an -inspect export contains
+// no trust-anchor root - so the "-export-scope all gave me no root" surprise
+// is self-explaining. Silent in JSON/quiet modes and when nothing was
+// written. Two cases:
+//   - a self-signed root WAS loaded but excluded by "ca" scope: point at
+//     -include-root;
+//   - no root was loaded at all (e.g. a URL or a bare leaf): a TLS server
+//     does not send the root, so validate (omit -inspect) to resolve it.
+func inspectExportHint(loaded, exported []*x509.Certificate, cfg *cli.Config) {
+	if cfg.JSON || verbosity != LevelNormal || len(exported) == 0 || containsSelfSigned(exported) {
+		return
+	}
+	if containsSelfSigned(loaded) {
+		fmt.Print(display.SanitizeTerminal("ℹ️  Note: a root was loaded but excluded from -export-scope ca; add -include-root to include it.\n"))
+		return
+	}
+	fmt.Print(display.SanitizeTerminal("ℹ️  Note: no trust-anchor root was among the loaded certificate(s). -inspect exports only what it loads, and a TLS server does not send the root. To include it, validate instead (omit -inspect) so the chain resolves to a trusted anchor.\n"))
+}
+
+func containsSelfSigned(certs []*x509.Certificate) bool {
+	for _, c := range certs {
+		if x509util.IsSelfSigned(c) {
+			return true
+		}
+	}
+	return false
 }
 
 func anyExpiredInfo(infos []certinfo.CertInfo) bool {

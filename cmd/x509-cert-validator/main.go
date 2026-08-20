@@ -94,12 +94,14 @@ var (
 )
 
 func main() {
-	cfg, err := cli.Parse(os.Args[1:], os.Args[0], os.Stderr)
+	// Explicit -h/-? help goes to stdout (exit 0) so `tool -h | grep` works
+	// without 2>&1; usage-on-error goes to stderr (exit 2).
+	cfg, err := cli.ParseWithStreams(os.Args[1:], os.Args[0], os.Stdout, os.Stderr)
 	if err != nil {
 		var perr *cli.ParseError
 		if errors.As(err, &perr) {
-			// Usage (when applicable) was already rendered by cli.Parse's
-			// fs.Usage closure. Message is empty for -h (exit 0).
+			// Usage was already rendered by ParseWithStreams (help to
+			// stdout, error usage to stderr). Message is empty for -h.
 			if perr.Message != "" {
 				fmt.Fprintln(os.Stderr, perr.Message)
 			}

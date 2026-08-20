@@ -68,7 +68,7 @@ Usage of ./x509-cert-validator:
   -export-name string
         Split filename scheme: index or subject (default "index")
   -export-scope string
-        Export scope: ca (CA chain, excludes leaf) or all (every cert) (default "ca")
+        Export scope: ca (CA certs; excludes leaf, and self-signed root unless -include-root) or all (every cert) (default "ca")
   -fail-expired
         Exit code 2 if any evaluated certificate is expired
   -fail-expiring
@@ -78,7 +78,7 @@ Usage of ./x509-cert-validator:
   -full
         Inspect: show full per-certificate detail (implied by -json)
   -include-root
-        Include the root/trust-anchor certificate in the export (ca scope)
+        Include the self-signed root/trust-anchor in a ca-scope export
   -inspect
         Inspect mode: describe certificate(s) without validating a chain
         (accepts file, directory, bundle, - for stdin, or URL)
@@ -154,6 +154,10 @@ EXAMPLES:
 
   11. Export as individual files instead of a bundle (-export-format split writes a directory):
       x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all -export-name subject
+
+Note on -export: validate mode exports the verified chain, resolved to a
+trust-anchor root; -inspect exports only the certificates it loaded, and a TLS
+server does not send the root. To include the root, validate (omit -inspect).
 ```
 
 ## Modes: inspect / export / JSON / expiry gate
@@ -176,6 +180,8 @@ All operations share the same `-cert` input, which now also accepts a
 **Exit codes:** `0` success · `1` error / invalid · `2` `-fail-expired` and a certificate is expired.
 
 **Output formats** (mutually exclusive): default human · `-json` · `-silent` · `-ultra-silent`. `-no-color` is an extra modifier for the inspect table.
+
+**Piping:** normal output (validate, inspect, and `-h`) goes to **stdout**; errors and usage-on-error go to **stderr**. For scripting prefer `-json` (clean, emoji-free); the human output prefixes status lines with emoji, which some terminals and pipes mangle.
 
 ### `-inspect` - describe certificate(s), no chain validation
 
@@ -253,23 +259,35 @@ echo $?    # 2
 
 ### `-export` - write validated/inspected certificates to disk
 
-`-export <dest>` writes certificates to disk on top of the current operation: in
-the default validate mode it exports the **verified** chain, and in `-inspect`
-mode it exports the loaded certificates. Two knobs control the shape:
+`-export <dest>` writes certificates to disk on top of the current operation.
+**What it operates on differs by mode** - the one thing to keep straight:
+
+| Mode | `-export` source | Can include the root? |
+|---|---|---|
+| *(default)* validate | the **verified chain**, resolved to a trust anchor | yes; the anchor comes from your trust store (or `-root`) |
+| `-inspect` | only the **certificates it loaded** | only if a root was actually loaded - a TLS server never sends the root |
+
+To get the root from a live endpoint, use **validate** mode (omit `-inspect`) so
+the chain resolves to a trusted anchor. `-inspect -export` prints a one-line hint
+when the result has no root, pointing you to the right flag or mode.
+
+The remaining knobs mean the **same thing in both modes**:
 
 - `-export-format bundle` (default) concatenates the selected certs into the
   single file `<dest>`; `-export-format split` writes one PEM file per cert into
   the directory `<dest>`.
-- `-export-scope ca` (default) selects the CA chain and excludes the leaf (add
-  `-include-root` to also emit the root anchor); `-export-scope all` emits every
-  certificate.
-
-`-export-name` chooses split filenames: `index` (default → `NN_subject.crt`) or
-`subject` (→ `subject.crt`, de-duplicated with a `-N` suffix).
+- `-export-scope ca` (default) selects the CA certificates, excluding the leaf
+  **and** the self-signed root; add `-include-root` to also emit the root.
+  `-export-scope all` emits every certificate.
+- `-export-name` chooses split filenames: `index` (default → `NN_subject.crt`)
+  or `subject` (→ `subject.crt`, de-duplicated with a `-N` suffix).
 
 ```shell
 # save the CA bundle needed to complete a leaf's chain (old -create-ca-bundle)
 x509-cert-validator -cert leaf.pem -aia -export ca-bundle.crt
+
+# include the trust-anchor root too (from the verified chain)
+x509-cert-validator -cert leaf.pem -aia -export ca-bundle.crt -include-root -root root.pem
 
 # split a bundle into one file per certificate (old -split)
 x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all

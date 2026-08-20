@@ -117,21 +117,32 @@ type ParseError struct {
 
 func (e *ParseError) Error() string { return e.Message }
 
-// Parse parses the supplied argument slice (typically os.Args[1:]) and
-// returns either a populated *Config or a *ParseError. It writes
-// nothing to stderr/stdout itself; callers route Usage output through
-// the supplied writer when ParseError.PrintUsage is true.
+// Parse is a convenience wrapper around ParseWithStreams that routes both
+// the explicit-help screen and the usage-on-error screen to the single
+// supplied writer. Prefer ParseWithStreams for correct stream separation.
+func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) {
+	return ParseWithStreams(args, progName, usageOut, usageOut)
+}
+
+// ParseWithStreams parses the supplied argument slice (typically
+// os.Args[1:]) and returns either a populated *Config or a *ParseError.
+// An explicitly requested help screen (-h/-help/--help/-?/--?) is written
+// to helpOut and reported with ExitCode 0 (stdout + exit 0 convention); a
+// usage-on-error screen (unknown flag, bad value) is written to errOut and
+// reported with ExitCode 2 (stderr + non-zero convention). It never calls
+// os.Exit; the caller wires helpOut=os.Stdout, errOut=os.Stderr.
 //
 // progName is used in usage output (typically os.Args[0]).
-func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) {
+func ParseWithStreams(args []string, progName string, helpOut, errOut io.Writer) (*Config, error) {
 	fs := flag.NewFlagSet(progName, flag.ContinueOnError)
 	// Suppress fs.Parse's own "flag provided but not defined" stderr
 	// line; we'll surface a uniform error via ParseError instead.
 	fs.SetOutput(io.Discard)
 
-	// Custom usage closure - writes to caller-supplied sink so tests
-	// can capture it.
-	fs.Usage = func() { writeUsage(usageOut, progName, fs) }
+	// Custom usage closure - the flag package invokes this only on a parse
+	// ERROR, so it targets errOut (stderr). Explicit help is handled by the
+	// helpRequested pre-scan below, which writes to helpOut (stdout).
+	fs.Usage = func() { writeUsage(errOut, progName, fs) }
 
 	certPath := fs.String("cert", "", "Path to Certificate PEM/DER, HTTP URL (download), or HTTPS URL (live probe). Note: file:// is NOT supported.")
 	rootPath := fs.String("root", "", "Path/URL to Root CA PEM/DER (optional; uses System Roots if empty). Supports local path, http(s) download, or https live-probe (same as -cert).")
@@ -140,7 +151,7 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	atTime := fs.String("at", "", "Optional: Validate at RFC3339 time")
 	enableCRL := fs.Bool("crl", false, "Enable certificate revocation checking (CRL)")
 	enableAIA := fs.Bool("aia", false, "Enable automatic AIA fetching")
-	includeRoot := fs.Bool("include-root", false, "Include the root/trust-anchor certificate in the export (ca scope)")
+	includeRoot := fs.Bool("include-root", false, "Include the self-signed root/trust-anchor in a ca-scope export")
 	usage := fs.String("type", "any", "Validation type: server, client, or any")
 	showGraph := fs.Bool("show-graph", false, "Display ASCII graph of the verified chain")
 	silent := fs.Bool("silent", false, "Output only pass/fail status and cert ID")
@@ -167,7 +178,7 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	// Unified export (validate mode exports the verified chain; -inspect exports the loaded certs).
 	export := fs.String("export", "", "Export destination: a file (bundle) or a directory (split). Empty = no export")
 	exportFormat := fs.String("export-format", "bundle", "Export format: bundle (one PEM file) or split (one file per cert)")
-	exportScope := fs.String("export-scope", "ca", "Export scope: ca (CA chain, excludes leaf) or all (every cert)")
+	exportScope := fs.String("export-scope", "ca", "Export scope: ca (CA certs; excludes leaf, and self-signed root unless -include-root) or all (every cert)")
 	exportName := fs.String("export-name", "index", "Split filename scheme: index or subject")
 
 	// Backward-compat aliases bound to the SAME flag.Value as the
@@ -187,15 +198,15 @@ func Parse(args []string, progName string, usageOut io.Writer) (*Config, error) 
 	// flag parser would otherwise swallow it as a string flag's value
 	// (e.g. "-export -?" or "-cert -h"). This MUST run before fs.Parse.
 	if helpRequested(args) {
-		writeUsage(usageOut, progName, fs)
+		writeUsage(helpOut, progName, fs)
 		return nil, &ParseError{Message: "", ExitCode: 0}
 	}
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			// -h/--help: the fs.Usage closure already rendered the full
-			// usage text to usageOut. Exit 0 per stdlib convention, with
-			// no extra noise ("flag: help requested") on stderr.
+			// Defensive: helpRequested pre-scans every -h/-help/--help/-?
+			// token, so this stdlib ErrHelp path is normally unreachable.
+			// Exit 0 with no message, matching the pre-scan help path.
 			return nil, &ParseError{Message: "", ExitCode: 0}
 		}
 		// Unknown flag / bad value: flag pkg already invoked fs.Usage too;
@@ -443,6 +454,10 @@ func writeUsage(w io.Writer, progName string, fs *flag.FlagSet) {
 
 	fmt.Fprintln(w, "\n  11. Export as individual files instead of a bundle (-export-format split writes a directory):")
 	fmt.Fprintln(w, "     x509-cert-validator -inspect -cert bundle.pem -export out -export-format split -export-scope all -export-name subject")
+
+	fmt.Fprintln(w, "\nNote on -export: validate mode exports the verified chain, resolved to a")
+	fmt.Fprintln(w, "trust-anchor root; -inspect exports only the certificates it loaded, and a TLS")
+	fmt.Fprintln(w, "server does not send the root. To include the root, validate (omit -inspect).")
 }
 
 // printDefaultsExcludingAliases mirrors flag.PrintDefaults but skips

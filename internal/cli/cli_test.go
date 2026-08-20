@@ -310,6 +310,30 @@ func TestUsageOmitsLegacyAliasNote(t *testing.T) {
 	}
 }
 
+// Explicit -h help goes to helpOut (stdout); usage-on-error goes to errOut
+// (stderr). Lets `tool -h | grep` work without 2>&1 while keeping errors
+// off stdout.
+func TestParseWithStreamsRoutesHelpAndErrorSeparately(t *testing.T) {
+	var help, errb strings.Builder
+	_, _ = ParseWithStreams([]string{"-h"}, "test", &help, &errb)
+	if !strings.Contains(help.String(), "Usage of") {
+		t.Errorf("-h: usage should go to helpOut, got helpOut=%q", help.String())
+	}
+	if errb.Len() != 0 {
+		t.Errorf("-h: errOut should be empty, got %q", errb.String())
+	}
+
+	help.Reset()
+	errb.Reset()
+	_, _ = ParseWithStreams([]string{"-bogus"}, "test", &help, &errb)
+	if !strings.Contains(errb.String(), "Usage of") {
+		t.Errorf("bad flag: usage should go to errOut, got errOut=%q", errb.String())
+	}
+	if help.Len() != 0 {
+		t.Errorf("bad flag: helpOut should be empty, got %q", help.String())
+	}
+}
+
 func TestParseUnknownFlagExitsTwo(t *testing.T) {
 	var buf strings.Builder
 	_, err := Parse([]string{"-bogus"}, "test", &buf)
