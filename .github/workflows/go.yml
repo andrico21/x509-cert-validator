@@ -41,7 +41,11 @@ jobs:
 
       - name: staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          # Go 1.27 support is not yet in a tagged staticcheck release (latest is
+          # 2026.1 / v0.7.0, which fails on Go 1.27 export-data version 4). Pin to
+          # the dev commit that has it; revert to @latest once staticcheck tags a
+          # release that supports Go 1.27.
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20260630164810-d69e7ee19e2d
           staticcheck ./...
 
       - name: gosec

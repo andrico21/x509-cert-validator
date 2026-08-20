@@ -377,7 +377,7 @@ Every certificate object (an inspect array element, or validate `leaf` /
 ## Validating of sample certificate (from Go website) - from file
 ```shell
 ./x509-cert-validator -cert test.crt -aia -crl
-Runtime: go1.26.0
+Runtime: go1.27.0
 Validation Time: 2026-02-13T22:56:41+04:00
 --- Loading Roots (System) ---
 ℹ️  Loaded System Root Store.
@@ -449,7 +449,7 @@ Root Trust: System Trust Store
 
 ```shell
 ./x509-cert-validator -cert https://google.com -dns google.ru -aia -crl -show-graph
-Runtime: go1.26.0
+Runtime: go1.27.0
 Validation Time: 2026-02-15T20:46:39+04:00
 --- Loading Roots (System) ---
 ℹ️  Loaded System Root Store.
@@ -491,7 +491,7 @@ Root Trust: System Trust Store
 ## Full certificate check - including correct DNS name
 ```shell
 /x509-cert-validator -cert https://google.com -dns google.com -aia -crl -show-graph
-Runtime: go1.26.0
+Runtime: go1.27.0
 Validation Time: 2026-02-15T20:48:04+04:00
 --- Loading Roots (System) ---
 ℹ️  Loaded System Root Store.
