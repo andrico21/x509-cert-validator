@@ -1,4 +1,8 @@
-# Build / vet / lint / vulncheck / integration tests.
+# Build / vet / lint / vulncheck / integration tests on branches and PRs.
+#
+# The gate definitions live in gates.yml so the release workflow runs the exact
+# same set on the tag it publishes; this file only decides when they run here.
+#
 # CI is enforced strict: any lint or test failure fails the workflow.
 
 name: Go
@@ -14,93 +18,5 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Lint (gofmt, vet, staticcheck, gosec)
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: gofmt -d (strict)
-        run: |
-          set -euo pipefail
-          out="$(gofmt -d .)"
-          if [ -n "$out" ]; then
-            echo "::error::gofmt found formatting issues:"
-            printf '%s\n' "$out"
-            exit 1
-          fi
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: staticcheck
-        run: |
-          # 2026.2 (module tag v0.8.1) added Go 1.27 support, so the temporary
-          # dev-commit pin for Go 1.27 export-data version 4 is gone. Keep the
-          # exact tag rather than @latest so CI is reproducible.
-          go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
-          staticcheck ./...
-
-      - name: gosec
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.29.0
-          "$(go env GOPATH)/bin/gosec" -quiet ./...
-
-  build:
-    name: Build / Vulncheck / Unit Tests
-    runs-on: ubuntu-26.04
-    needs: lint
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Test
-        run: go test -v ./...
-
-  integration:
-    name: Integration tests (tests.sh)
-    runs-on: ubuntu-26.04
-    needs: build
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Verify required tools (openssl, python3, timeout)
-        run: |
-          set -euo pipefail
-          for c in openssl python3 timeout bash; do
-            command -v "$c" >/dev/null || { echo "missing: $c"; exit 1; }
-          done
-          openssl version
-          python3 --version
-
-      - name: Build validator
-        run: go build -o ./x509-cert-validator ./cmd/x509-cert-validator
-
-      - name: Run integration suite (tests.sh)
-        run: bash ./tests.sh -validator "$PWD/x509-cert-validator"
+  gates:
+    uses: ./.github/workflows/gates.yml

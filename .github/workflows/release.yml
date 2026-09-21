@@ -9,7 +9,15 @@ permissions:
   contents: write
 
 jobs:
+  # Publication is authorized by a tag push, which cannot select go.yml, so the
+  # gate set runs here on the same revision being published. build waits for it
+  # and release waits for build, because release consumes build's artifacts via
+  # download-artifact and would otherwise be able to run before they exist.
+  gates:
+    uses: ./.github/workflows/gates.yml
+
   build:
+    needs: gates
     runs-on: ubuntu-26.04
     strategy:
       matrix:

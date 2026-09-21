@@ -23,4 +23,4 @@ go build -buildmode=pie -trimpath \
 
 ## Verification
 
-Verified locally before tagging: `go test -count=1 ./...`, `go vet ./...`, `gofmt -d` clean, `staticcheck ./...`, `gosec -quiet ./...`, `govulncheck ./...`. The tag push builds and publishes the release artifacts; the CI gate set runs on `main` and on pull requests.
+Verified locally before tagging: `go test -count=1 ./...`, `go vet ./...`, `gofmt -d` clean, `staticcheck ./...`, `gosec -quiet ./...`, `govulncheck ./...`. The tag push runs the same gate set on the tagged revision and then builds and publishes the release artifacts; the gates also run on `main` and on pull requests.
