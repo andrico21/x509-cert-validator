@@ -23,4 +23,4 @@ go build -buildmode=pie -trimpath \
 
 ## Verification
 
-Verified locally before tagging: `go test -count=1 ./...` (all packages), `go vet ./...`, `gofmt -d` clean, `staticcheck ./...` at the new pin, `gosec -quiet ./...` at v2.29.0, and `govulncheck ./...` reporting no vulnerabilities. Pushing this tag runs the same gates on GitHub Actions, plus the openssl-backed `tests.sh` integration suite.
+Verified locally before tagging: `go test -count=1 ./...`, `go vet ./...`, `gofmt -d` clean, `staticcheck ./...`, `gosec -quiet ./...`, `govulncheck ./...`. The tag push builds and publishes the release artifacts; the CI gate set runs on `main` and on pull requests.
