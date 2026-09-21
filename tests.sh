@@ -1080,6 +1080,15 @@ add_test "51. Validate: -json reports hostname_checked honestly" "PASS" "HOSTNAM
 add_test "52. Validate: -json omits warnings on a clean run" "PASS" "NO_WARNINGS_KEY" \
   "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${ROOT_CRT} -aia -json 2>/dev/null)\"; printf '%s' \"\$o\" | grep -q '\"warnings\"' || echo NO_WARNINGS_KEY"
 
+# 53/54 pin the trust-anchor provenance warning: a -root fetched over the wire
+# is not authenticated, so the operator must be told and given the fingerprint;
+# a local -root file must stay quiet.
+add_test "53. Validate: warns when the trust anchor arrives over the wire" "PASS" "ANCHOR_WARNING_OK" \
+  "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${HTTP_URL}/root.crt -aia -json 2>/dev/null)\"; printf '%s' \"\$o\" | grep -q 'without authenticating the peer' && printf '%s' \"\$o\" | grep -q 'Anchor SHA-256' && echo ANCHOR_WARNING_OK"
+
+add_test "54. Validate: no anchor warning for a local -root file" "PASS" "NO_ANCHOR_WARNING" \
+  "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${ROOT_CRT} -aia -json 2>/dev/null)\"; printf '%s' \"\$o\" | grep -q 'without authenticating the peer' || echo NO_ANCHOR_WARNING"
+
 # ---- End of test definitions ----
 
 run_all_tests

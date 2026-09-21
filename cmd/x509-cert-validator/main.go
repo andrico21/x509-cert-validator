@@ -227,10 +227,23 @@ func main() {
 
 	if *rootPath != "" {
 		rootSourceLabel = "Explicit User Root"
+		// A -root URL is fetched with the live-probe dialer, which does not
+		// authenticate the peer (main.go's #nosec G402 site). For -cert that is
+		// the point - the chain is the object of diagnosis and is checked
+		// afterwards - but a -root fetch produces the trust decision itself, so
+		// the operator has to be told the anchor arrived unauthenticated.
+		anchorScheme := wireScheme(*rootPath)
+		if anchorScheme != "" {
+			warnAndLog("\n⚠️  WARNING: the trust anchor is fetched over %s without authenticating the peer. Verify each fingerprint below against the expected value before trusting this run.\n",
+				anchorScheme)
+		}
 		logNormal("--- Loading Roots (File/URL) ---\n")
 		roots = x509.NewCertPool()
 		for _, cert := range loadAll(ctx, *rootPath) {
 			printShortID("Root", cert)
+			if anchorScheme != "" {
+				warnAndLog("   Anchor SHA-256: %x\n", sha256.Sum256(cert.Raw))
+			}
 			if !cert.IsCA {
 				warnAndLog("  ⚠️ WARNING: Root input cert is NOT marked as CA\n")
 			}
@@ -873,6 +886,22 @@ func printCertDetails(label string, cert *x509.Certificate) {
 	printNameConstraints("", cert)
 }
 
+// wireScheme reports the transport when an input names a remote URL rather
+// than a local path, using the same normalisation as loadAll. It returns ""
+// for local paths, which need no transport warning.
+func wireScheme(input string) string {
+	s := strings.ToLower(strings.TrimSpace(input))
+	switch {
+	case strings.HasPrefix(s, "https://"):
+		return "https"
+	case strings.HasPrefix(s, "http://"):
+		return "http"
+	default:
+		return ""
+	}
+}
+
+// loadAll resolves an input to certificates, dispatching on its scheme.
 func loadAll(ctx context.Context, input string) []*x509.Certificate {
 	if strings.TrimSpace(input) == "-" {
 		return loadStdin()
@@ -965,6 +994,14 @@ func fetchRemoteCert(ctx context.Context, urlStr string) []*x509.Certificate {
 	logNormal("⬇️  Connecting to remote server: %s ...\n", host)
 
 	// #nosec G402 -- this tool is a TLS *diagnostic*; we deliberately disable Go's built-in chain verification so we can collect and analyze the server-presented chain ourselves via x509.Verify (with caller-controlled roots/intermediates and -dns/-sni hostname checks). Documented behavior, not an oversight.
+	//
+	// Scope note: that self-verification rationale holds for -cert, where the
+	// fetched chain is the object of diagnosis. It does NOT hold when this
+	// dialer is reached through loadAll for a -root URL, because the fetched
+	// certificates then become x509.VerifyOptions.Roots - the fetched value is
+	// the trust decision itself, with no later independent check to fall back
+	// on. That path is not authenticated and is warned about at the -root
+	// loading site.
 	cfg := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12} // we validate ourselves via x509.Verify
 	if sniOverride != "" {
 		cfg.ServerName = sniOverride
