@@ -1,29 +1,26 @@
-# 1.5.3 - Consistent export scope + help on stdout
+# 1.5.4 - Go 1.27.1 and lint tool pins
 
-A patch release that removes two `-export` surprises and fixes where `-h` writes.
-
-## Fixes
-
-- `-export-scope ca` now behaves the same in both modes: it selects the CA certificates, excludes the leaf, and excludes the self-signed root unless `-include-root` is set. Previously `-inspect` exported every loaded CA (including any root) and silently ignored `-include-root`, while validate excluded the root by default, so the same flags meant different things.
-- `-h`, `-?`, `-help`, and `--help` now write the help screen to stdout and exit 0, so `tool -h | grep ...` works without `2>&1`. Usage shown on a bad flag still goes to stderr with a non-zero exit.
+A maintenance patch. No behavior, flag, or output changes.
 
 ## Changes
 
-- `-inspect -export` prints a one-line hint when the result has no trust-anchor root: either add `-include-root` (a root was loaded but excluded by `ca` scope), or validate instead (a TLS server does not send the root, so only validate resolves it from the trust store).
-- README documents the per-mode `-export` semantics and the stdout/stderr routing.
+- Built with the Go 1.27.1 toolchain (was 1.27.0). Release binaries now report `go1.27.1` at runtime. Every workflow reads the Go version from `go-version-file: go.mod`, so this single line is what pins the toolchain used by the lint, build, integration, release, and CodeQL jobs.
+- staticcheck: the temporary dev-commit pin (`v0.7.0-0.dev.0.20260630164810-d69e7ee19e2d`) is replaced by the tagged release `2026.2.1` (module tag v0.8.1). That is the release that added Go 1.27 support, which is why the dev-commit workaround existed. It stays pinned to an exact tag rather than `@latest` so CI stays reproducible.
+- gosec: `v2.28.0` to `v2.29.0`.
 
 ## Notes
 
-- No change to what validate mode exports, and `-export-scope all` still emits every certificate the operation has (the full verified chain in validate; the loaded certs in inspect).
+- The dev-commit staticcheck pin was the last place a CI gate ran on moving, unreleased tooling; linting now runs entirely on released versions.
+- The project still has no third-party dependencies: `go.mod` has no `require` block and `go.sum` is empty, so there is nothing else to update.
 
 ## Build
 
 ```shell
 go build -buildmode=pie -trimpath \
-  -ldflags="-s -w -X main.version=1.5.3" \
+  -ldflags="-s -w -X main.version=1.5.4" \
   -o ./x509-cert-validator ./cmd/x509-cert-validator
 ```
 
 ## Verification
 
-`go test ./...` plus the `tests.sh` integration suite. All CI gates green: gofmt, vet, staticcheck, gosec, govulncheck, unit tests, CodeQL, and the openssl-backed integration suite.
+Verified locally before tagging: `go test -count=1 ./...` (all packages), `go vet ./...`, `gofmt -d` clean, `staticcheck ./...` at the new pin, `gosec -quiet ./...` at v2.29.0, and `govulncheck ./...` reporting no vulnerabilities. Pushing this tag runs the same gates on GitHub Actions, plus the openssl-backed `tests.sh` integration suite.
