@@ -10,6 +10,10 @@
 #   TIMEOUT_SECS=15             # per-test timeout
 #   OPENSSL_KEYGEN_QUIET=1      # suppress RSA/EC keygen progress (default: 1)
 #   OPENSSL_QUIET=1             # if 1, suppress most openssl stdout/stderr (default: 1)
+#   OPENSSL_VERSION_EXPECTED=3.5.5
+#                               # required openssl version; "any" to skip the check.
+#                               # 3.5.5 is the parity oracle the validator is
+#                               # validated against (see README "Goals").
 #   CRL_DAYS=30                 # CRL validity for openssl ca -gencrl (default: 30)
 #   EXTRA_CRYPTO=0              # if 1, also generate/run extra RSA/EC tests not in canonical list
 
@@ -20,6 +24,7 @@ KEEP_TMP="${KEEP_TMP:-0}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-15}"
 OPENSSL_KEYGEN_QUIET="${OPENSSL_KEYGEN_QUIET:-1}"
 OPENSSL_QUIET="${OPENSSL_QUIET:-1}"
+OPENSSL_VERSION_EXPECTED="${OPENSSL_VERSION_EXPECTED:-3.5.5}"
 CRL_DAYS="${CRL_DAYS:-30}"
 EXTRA_CRYPTO="${EXTRA_CRYPTO:-0}"
 
@@ -32,6 +37,33 @@ say() { printf '%s\n' "$*"; }
 
 need_cmd() {
   command -v "${1}" >/dev/null 2>&1 || die "missing required command: ${1}"
+}
+
+# check_openssl_version enforces that the openssl generating every fixture in
+# this suite is the version the suite is validated against. The validator exists
+# to compare its own x509 handling with OpenSSL's, so the OpenSSL version is part
+# of the test contract rather than an implementation detail: a different build
+# can legitimately generate different fixtures and reach different verdicts.
+# Set OPENSSL_VERSION_EXPECTED to your version, or to "any" to skip the check.
+check_openssl_version() {
+  local out detected
+  out="$(openssl version 2>/dev/null)" || die "could not run 'openssl version'"
+  detected="${out#* }"
+  detected="${detected%% *}"
+  [[ -n "${detected}" ]] || die "could not determine the openssl version from: ${out}"
+
+  say "=== OpenSSL: ${detected} (expected: ${OPENSSL_VERSION_EXPECTED}) ==="
+
+  if [[ "${OPENSSL_VERSION_EXPECTED}" == "any" ]]; then
+    return 0
+  fi
+  if [[ "${detected}" != "${OPENSSL_VERSION_EXPECTED}" ]]; then
+    die "openssl version mismatch: found ${detected}, expected ${OPENSSL_VERSION_EXPECTED}.
+       This suite generates its PKI with the local openssl and asserts the validator's
+       behaviour against it, so the openssl version is part of the test contract.
+       Re-run with OPENSSL_VERSION_EXPECTED=${detected} to accept this version, or set
+       OPENSSL_VERSION_EXPECTED=any to skip the check entirely."
+  fi
 }
 
 write_file() {
@@ -410,6 +442,7 @@ run_all_tests() {
 need_cmd openssl
 need_cmd python3
 need_cmd timeout
+check_openssl_version
 
 TOOL_BIN=""
 while [[ $# -gt 0 ]]; do
