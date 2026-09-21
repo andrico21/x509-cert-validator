@@ -128,7 +128,7 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 					return res, fmt.Errorf("issuer '%s' has a KeyUsage extension without cRLSign; cannot verify revocation status of '%s' declared via CRLDistributionPoints",
 						x509util.CnOrDN(parent), x509util.CnOrDN(child))
 				}
-				c.log("ℹ️  Issuer '%s' has no KeyUsage extension; treating as CRL-sign capable (RFC 5280 §4.2.1.3).\n", x509util.CnOrDN(parent))
+				c.warn("ℹ️  Issuer '%s' has no KeyUsage extension; treating as CRL-sign capable (RFC 5280 §4.2.1.3).\n", x509util.CnOrDN(parent))
 			}
 
 			// Pair dedupe (prevents duplicate checks across multiple verified chain paths)
@@ -149,7 +149,7 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 			for idx, cdpURL := range child.CRLDistributionPoints {
 				if !strings.HasPrefix(cdpURL, "http://") && !strings.HasPrefix(cdpURL, "https://") {
 					// M-2: surface skipped non-http(s) CRL URLs.
-					c.log("⚠️  Skipping CRL URL with unsupported scheme [%d/%d] for '%s': %s\n", idx+1, len(child.CRLDistributionPoints), x509util.CnOrDN(child), cdpURL)
+					c.warn("⚠️  Skipping CRL URL with unsupported scheme [%d/%d] for '%s': %s\n", idx+1, len(child.CRLDistributionPoints), x509util.CnOrDN(child), cdpURL)
 					continue
 				}
 
@@ -211,7 +211,7 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 				// Catches the rare same-key-different-CA edge case earlier with a clearer error
 				// (the subsequent sig check would also reject, but with a less informative message).
 				if !bytes.Equal(rl.RawIssuer, parent.RawSubject) {
-					c.log("⚠️  CRL Issuer DN does not match parent CA Subject DN (CRL Issuer=%q vs Parent=%q). Treating CRL as invalid.\n",
+					c.warn("⚠️  CRL Issuer DN does not match parent CA Subject DN (CRL Issuer=%q vs Parent=%q). Treating CRL as invalid.\n",
 						rl.Issuer.String(), parent.Subject.String())
 					errMsgs = append(errMsgs, fmt.Sprintf("%s: CRL Issuer DN does not match parent CA Subject DN", cdpURL))
 					continue
@@ -235,7 +235,7 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 
 				// Missing ThisUpdate/NextUpdate => warning + treat as invalid for -crl
 				if rl.ThisUpdate.IsZero() || rl.NextUpdate.IsZero() {
-					c.log("⚠️  WARNING: CRL from %s missing ThisUpdate/NextUpdate; treating as invalid for -crl.\n", cdpURL)
+					c.warn("⚠️  WARNING: CRL from %s missing ThisUpdate/NextUpdate; treating as invalid for -crl.\n", cdpURL)
 					errMsgs = append(errMsgs, fmt.Sprintf("%s: missing ThisUpdate/NextUpdate", cdpURL))
 					continue
 				}
@@ -284,4 +284,15 @@ func (c *Checker) log(format string, args ...any) {
 		return
 	}
 	c.Logger.Normal(format, args...)
+}
+
+// warn records a security-relevant diagnostic through the run logger so it
+// reaches machine consumers via the JSON document. It mirrors log's nil
+// guard: Logger is documented as optional, so a nil one disables output
+// rather than panicking.
+func (c *Checker) warn(format string, args ...any) {
+	if c.Logger == nil {
+		return
+	}
+	c.Logger.Warn(format, args...)
 }

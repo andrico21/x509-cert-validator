@@ -181,7 +181,7 @@ All operations share the same `-cert` input, which now also accepts a
 
 **Output formats** (mutually exclusive): default human · `-json` · `-silent` · `-ultra-silent`. `-no-color` is an extra modifier for the inspect table.
 
-**Piping:** normal output (validate, inspect, and `-h`) goes to **stdout**; errors and usage-on-error go to **stderr**. For scripting prefer `-json` (clean, emoji-free); the human output prefixes status lines with emoji, which some terminals and pipes mangle.
+**Piping:** normal output (validate, inspect, and `-h`) goes to **stdout**; errors and usage-on-error go to **stderr**. For scripting prefer `-json` (clean, emoji-free); the human output prefixes status lines with emoji, which some terminals and pipes mangle. Under `-json` stdout carries the document and **nothing else** - progress narration and security diagnostics are suppressed there and the diagnostics are instead available in `warnings` (see below), so the stream always parses. `-silent` and `-ultra-silent` promise less: `-silent` emits only a PASS/FAIL line, `-ultra-silent` emits nothing and communicates through the exit code alone.
 
 ### `-inspect` - describe certificate(s), no chain validation
 
@@ -357,9 +357,36 @@ objects with the identical shape shown above:
     [ { "role": "server", ... }, { "role": "intermediate", ... }, { "role": "root", "self_signed": true, ... } ]
   ],
   "crl_checked": false,
+  "hostname_checked": true,
+  "dns_name": "leaf.test.example.com",
+  "warnings": [
+    "⚠️  Skipping CRL URL with unsupported scheme [1/1] for 'leaf.test.example.com': ldap://pki.test.example.com/crl"
+  ],
   "expiry": { "days_remaining": 39, "expired": false, "expiring": false, "threshold_days": 30 }
 }
 ```
+
+The validate-document fields outside `leaf`/`chains` are:
+
+| Field | Type | Notes |
+|---|---|---|
+| `ok` | bool | the verdict |
+| `error` | string | failure reason; omitted on success |
+| `validation_time` | string | the effective evaluation time (honours `-at`) |
+| `root_trust` | string | which trust store supplied the anchors |
+| `leaf`, `chains` | `CertInfo`, `[][]CertInfo` | as above |
+| `crl_checked` | bool | always present |
+| `hostname_checked` | bool | **always present.** `true` only when a hostname check actually ran, i.e. `-dns` or `-sni` was supplied for an `https://` probe. A run that verified the chain but skipped hostname verification reports `"ok": true` with `"hostname_checked": false` - check it before treating `ok` as "the endpoint is trustworthy". |
+| `dns_name` | string | the name verification ran against; omitted when none ran |
+| `warnings` | []string | security-relevant diagnostics that the human output would print, so machine consumers see them even though `-json` suppresses prose. Omitted entirely when there are none. |
+
+> `warnings` carries decisions and inferences about untrusted input - a trust
+> anchor fetched over the network, a certificate input not marked CA, an
+> unsupported CRL/AIA URL scheme, an AIA issuer mismatch, a skipped file. It
+> does **not** carry progress narration (which `-json` suppresses), and it does
+> not duplicate facts already structured elsewhere in the document (expiry,
+> key/signature algorithm, SAN presence).
+
 
 > `-export` writes PEM files as a side effect of validate/inspect. In `-json` mode
 > the export still runs, but the JSON document stays the validate/inspect payload -

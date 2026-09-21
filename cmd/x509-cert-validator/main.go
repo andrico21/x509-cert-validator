@@ -85,6 +85,15 @@ var (
 	maxRemoteCertFileSize int64 = DefaultMaxRemoteCertFileSize
 	showAllFP             bool
 
+	// hostnameChecked reports whether a hostname/DNS verification actually
+	// ran for this run's target, and effectiveDNSForJSON is the name it ran
+	// against. Both are run-scoped rather than local to the DNS decision
+	// because exitErr builds the JSON document afterwards: a failure past
+	// that point must still report the truth rather than defaulting to
+	// "not checked".
+	hostnameChecked     bool
+	effectiveDNSForJSON string
+
 	// runValidator carries the run-scoped *http.Client + Logger + size
 	// caps shared by every network caller (AIA, CRL). Built once in
 	// main() from the parsed cli.Config; nil before main() initializes
@@ -140,7 +149,8 @@ func main() {
 		DefaultHTTPTimeout,
 		DefaultMaxHTTPRedirects,
 		cfg.MaxAIA, cfg.MaxCRL, cfg.MaxLocal, cfg.MaxRemote,
-		nil, // logger=nil -> NewStderrLogger(level)
+		nil,      // logger=nil -> NewStderrLogger(level)
+		jsonMode, // suppress logger printing so -json stdout stays a pure document
 	)
 
 	// Pointer locals preserve the legacy *string / *bool deref pattern
@@ -223,7 +233,7 @@ func main() {
 		for _, cert := range loadAll(ctx, *rootPath) {
 			printShortID("Root", cert)
 			if !cert.IsCA {
-				logNormal("  ⚠️ WARNING: Root input cert is NOT marked as CA\n")
+				warnAndLog("  ⚠️ WARNING: Root input cert is NOT marked as CA\n")
 			}
 			roots.AddCert(cert)
 			rootCerts = append(rootCerts, cert)
@@ -235,7 +245,7 @@ func main() {
 		var err error
 		roots, err = x509.SystemCertPool()
 		if err != nil {
-			logNormal("⚠️  Failed to load system roots: %v. Using empty pool.\n", err)
+			warnAndLog("⚠️  Failed to load system roots: %v. Using empty pool.\n", err)
 			roots = x509.NewCertPool()
 			rootSourceLabel = "Empty/Failed Store"
 		} else {
@@ -256,7 +266,7 @@ func main() {
 			for _, cert := range loadAll(ctx, path) {
 				printShortID("Inter", cert)
 				if !cert.IsCA {
-					logNormal("  ⚠️ WARNING: Intermediate is NOT marked as CA\n")
+					warnAndLog("  ⚠️ WARNING: Intermediate is NOT marked as CA\n")
 				}
 				inters.AddCert(cert)
 				discoveredIntermediates = append(discoveredIntermediates, cert)
@@ -270,7 +280,7 @@ func main() {
 	// This tool is diagnostic; we keep the behavior but make the bypass loud.
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(*certPath)), "https://") &&
 		strings.TrimSpace(*dnsName) == "" && sniOverride == "" {
-		logNormal("\n⚠️  Hostname verification SKIPPED (no -dns/-sni provided for HTTPS probe). Chain validity only.\n")
+		warnAndLog("\n⚠️  Hostname verification SKIPPED (no -dns/-sni provided for HTTPS probe). Chain validity only.\n")
 	}
 
 	targetCerts := loadAll(ctx, *certPath)
@@ -308,7 +318,7 @@ func main() {
 			curFP := sha256.Sum256(currentCert.Raw)
 			curKey := hex.EncodeToString(curFP[:])
 			if seen[curKey] {
-				logNormal("⚠️  WARNING: AIA loop detected (already visited %s). Stopping fetch.\n", x509util.CnOrDN(currentCert))
+				warnAndLog("⚠️  WARNING: AIA loop detected (already visited %s). Stopping fetch.\n", x509util.CnOrDN(currentCert))
 				break
 			}
 			seen[curKey] = true
@@ -334,14 +344,14 @@ func main() {
 
 			parentCert, err := fetchAIA(ctx, currentCert)
 			if err != nil {
-				logNormal("⚠️  AIA Fetch failed for %s: %v\n", x509util.CnOrDN(currentCert), err)
+				warnAndLog("⚠️  AIA Fetch failed for %s: %v\n", x509util.CnOrDN(currentCert), err)
 				break
 			}
 
 			parentFP := sha256.Sum256(parentCert.Raw)
 			parentKey := hex.EncodeToString(parentFP[:])
 			if seen[parentKey] {
-				logNormal("⚠️  WARNING: AIA returned a previously seen certificate (%s). Stopping fetch.\n", x509util.CnOrDN(parentCert))
+				warnAndLog("⚠️  WARNING: AIA returned a previously seen certificate (%s). Stopping fetch.\n", x509util.CnOrDN(parentCert))
 				break
 			}
 
@@ -367,7 +377,7 @@ func main() {
 		}
 
 		if chainDepth >= maxDepth {
-			logNormal("⚠️  WARNING: AIA fetch stopped after max depth (%d).\n", maxDepth)
+			warnAndLog("⚠️  WARNING: AIA fetch stopped after max depth (%d).\n", maxDepth)
 		}
 	}
 
@@ -376,6 +386,11 @@ func main() {
 	if effectiveDNS == "" && sniOverride != "" {
 		effectiveDNS = sniOverride
 	}
+	// Record the decision for the JSON document. An empty name means no
+	// hostname check runs at all, and a consumer must be able to tell that
+	// apart from a verified success.
+	hostnameChecked = effectiveDNS != ""
+	effectiveDNSForJSON = effectiveDNS
 
 	// --- 7. Verify Chain ---
 	opts := x509.VerifyOptions{
@@ -391,7 +406,7 @@ func main() {
 	// M-1: if system roots failed to load earlier, re-warn at verification time
 	// so the user understands WHY "unknown authority" is about to happen.
 	if rootSourceLabel == "Empty/Failed Store" {
-		logNormal("\n⚠️  CRITICAL: Verifying against EMPTY trust pool (system roots failed to load). Verification WILL fail unless -root is provided.\n\n")
+		warnAndLog("\n⚠️  CRITICAL: Verifying against EMPTY trust pool (system roots failed to load). Verification WILL fail unless -root is provided.\n\n")
 	}
 	chains, err := leaf.Verify(opts)
 	if err != nil {
@@ -405,7 +420,7 @@ func main() {
 		logNormal("\n=== Exporting to %s (format=%s, scope=%s) ===\n", cfg.Export, cfg.ExportFormat, cfg.ExportScope)
 
 		if *includeRoot && rootSourceLabel != "Explicit User Root" {
-			logNormal("⚠️  WARNING: -include-root has no effect: roots come from %s (no explicit root file provided via -root).\n", rootSourceLabel)
+			warnAndLog("⚠️  WARNING: -include-root has no effect: roots come from %s (no explicit root file provided via -root).\n", rootSourceLabel)
 			logNormal("   System root certificates cannot be exported. Use -root <file> to provide an explicit root.\n")
 		}
 
@@ -511,12 +526,15 @@ func main() {
 	if jsonMode {
 		leafInfo := certinfo.FromCert(leaf, 0, currentTime, cfg.Days)
 		res := validateJSON{
-			OK:             true,
-			ValidationTime: currentTime,
-			RootTrust:      rootSourceLabel,
-			Leaf:           &leafInfo,
-			Chains:         chainsToInfos(chains, currentTime, cfg.Days),
-			CRLChecked:     *enableCRL,
+			OK:              true,
+			ValidationTime:  currentTime,
+			RootTrust:       rootSourceLabel,
+			Leaf:            &leafInfo,
+			Chains:          chainsToInfos(chains, currentTime, cfg.Days),
+			CRLChecked:      *enableCRL,
+			HostnameChecked: hostnameChecked,
+			DNSName:         effectiveDNSForJSON,
+			Warnings:        collectedWarnings(),
 			Expiry: &expiryJSON{
 				DaysRemaining: leafInfo.DaysRemaining,
 				Expired:       leafInfo.Expired,
@@ -736,13 +754,38 @@ func logNormal(format string, args ...any) {
 	}
 }
 
+// warnAndLog records a security-relevant diagnostic in the run's warning
+// collector and prints it at normal verbosity. The recorded copy is what the
+// -json document exposes, which is why the collector is fed unconditionally:
+// printing is suppressed in JSON mode, so a site that only printed would lose
+// the warning exactly when a machine consumer needs it.
+func warnAndLog(format string, args ...any) {
+	if runValidator == nil || runValidator.Logger == nil {
+		return
+	}
+	runValidator.Logger.Warn(format, args...)
+}
+
+// collectedWarnings returns the warnings recorded so far, or nil when the
+// run-scoped validator is not yet built (a failure before main() constructs
+// it), so the JSON paths can call this unconditionally.
+func collectedWarnings() []string {
+	if runValidator == nil || runValidator.Logger == nil {
+		return nil
+	}
+	return runValidator.Logger.Warnings()
+}
+
 func exitErr(err error) {
 	if jsonMode {
 		res := validateJSON{
-			OK:             false,
-			Error:          err.Error(),
-			ValidationTime: validationTime,
-			RootTrust:      rootSourceLabel,
+			OK:              false,
+			Error:           err.Error(),
+			ValidationTime:  validationTime,
+			RootTrust:       rootSourceLabel,
+			HostnameChecked: hostnameChecked,
+			DNSName:         effectiveDNSForJSON,
+			Warnings:        collectedWarnings(),
 		}
 		if targetLeaf != nil {
 			li := certinfo.FromCert(targetLeaf, 0, validationTime, daysThreshold)
@@ -885,13 +928,13 @@ func loadDir(dir string) []*x509.Certificate {
 		// #nosec G304 G703 -- scanning a user-specified directory of certificate files is the tool's purpose; the path being a variable is by design.
 		f, err := os.Open(p)
 		if err != nil {
-			logNormal("⚠️  Skipping unreadable file %s: %v\n", p, err)
+			warnAndLog("⚠️  Skipping unreadable file %s: %v\n", p, err)
 			continue
 		}
 		data, err := readWithLimit(f, maxLocalFileBytes)
 		_ = f.Close()
 		if err != nil {
-			logNormal("⚠️  Skipping %s: %v\n", p, err)
+			warnAndLog("⚠️  Skipping %s: %v\n", p, err)
 			continue
 		}
 		res := certload.ParseCertsSafe(data)
@@ -1034,7 +1077,7 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
 		hasInsecureAlgo = true
 	}
 	for _, msg := range res.SkippedBlocks {
-		logNormal("%s\n", msg)
+		warnAndLog("%s\n", msg)
 	}
 	if err != nil {
 		exitErr(err)

@@ -88,7 +88,7 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 	for i, u := range cert.IssuingCertificateURL {
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 			// M-2: surface skipped non-http(s) AIA URLs instead of silently ignoring them.
-			f.log("⚠️  Skipping AIA URL with unsupported scheme [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
+			f.warn("⚠️  Skipping AIA URL with unsupported scheme [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
 			continue
 		}
 		f.log("⬇️  Fetching Parent via AIA [%d/%d]: %s\n", i+1, len(cert.IssuingCertificateURL), u)
@@ -98,7 +98,7 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 		req, err := http.NewRequestWithContext(fetchCtx, "GET", u, nil)
 		if err != nil {
 			cancel()
-			f.log("   ⚠️  Bad Request: %v\n", err)
+			f.warn("   ⚠️  Bad Request: %v\n", err)
 			lastErr = err
 			continue
 		}
@@ -107,7 +107,7 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 		resp, err := f.Client.Do(req)
 		if err != nil {
 			cancel()
-			f.log("   ⚠️  Connection Failed: %v\n", err)
+			f.warn("   ⚠️  Connection Failed: %v\n", err)
 			lastErr = err
 			continue
 		}
@@ -115,7 +115,7 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 		if resp.StatusCode != 200 {
 			_ = resp.Body.Close()
 			cancel()
-			f.log("   ⚠️  HTTP Error: %d\n", resp.StatusCode)
+			f.warn("   ⚠️  HTTP Error: %d\n", resp.StatusCode)
 			lastErr = fmt.Errorf("status %d", resp.StatusCode)
 			continue
 		}
@@ -124,7 +124,7 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 		_ = resp.Body.Close()
 		cancel()
 		if err != nil {
-			f.log("   ⚠️  Read Failed: %v\n", err)
+			f.warn("   ⚠️  Read Failed: %v\n", err)
 			lastErr = err
 			continue
 		}
@@ -150,11 +150,11 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 			sigOK := cert.CheckSignatureFrom(fetched) == nil
 			switch {
 			case !nameOK && !sigOK:
-				f.log("   ⚠️  AIA cert from %s does NOT match expected issuer of '%s' (subject mismatch AND bad signature). Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
+				f.warn("   ⚠️  AIA cert from %s does NOT match expected issuer of '%s' (subject mismatch AND bad signature). Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
 			case !nameOK:
-				f.log("   ⚠️  AIA cert from %s has Subject DN that does NOT match expected Issuer DN of '%s'. Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
+				f.warn("   ⚠️  AIA cert from %s has Subject DN that does NOT match expected Issuer DN of '%s'. Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
 			case !sigOK:
-				f.log("   ⚠️  AIA cert from %s did NOT sign '%s' (signature check failed). Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
+				f.warn("   ⚠️  AIA cert from %s did NOT sign '%s' (signature check failed). Adding to pool anyway for diagnostic visibility.\n", u, x509util.CnOrDN(cert))
 			default:
 				f.log("   ✅ AIA cert verified against child issuer (name + signature OK).\n")
 			}
@@ -162,7 +162,7 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 			res.Parent = fetched
 			return res, nil
 		}
-		f.log("   ⚠️  Parse Failed\n")
+		f.warn("   ⚠️  Parse Failed\n")
 		lastErr = fmt.Errorf("unable to parse certificate data")
 	}
 	return res, fmt.Errorf("all AIA URLs failed. Last error: %v", lastErr)
@@ -173,4 +173,15 @@ func (f *Fetcher) log(format string, args ...any) {
 		return
 	}
 	f.Logger.Normal(format, args...)
+}
+
+// warn records a security-relevant diagnostic through the run logger so it
+// reaches machine consumers via the JSON document. It mirrors log's nil
+// guard: Logger is required by the constructor but may still be nil in
+// tests, so a nil one disables output rather than panicking.
+func (f *Fetcher) warn(format string, args ...any) {
+	if f.Logger == nil {
+		return
+	}
+	f.Logger.Warn(format, args...)
 }

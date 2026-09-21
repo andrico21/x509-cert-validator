@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/andrico21/x509-cert-validator/internal/display"
@@ -49,6 +50,15 @@ type Logger interface {
 	// expensive formatting (e.g. building ASCII chain graphs) when output
 	// would be discarded anyway.
 	Verbosity() Verbosity
+	// Warn records a security-relevant diagnostic and prints it under the
+	// same rules as Normal. Recording is independent of both verbosity and
+	// output format: the collected set is the machine-readable channel that
+	// -json exposes, so a caller that only prints would lose the warning
+	// exactly when a machine consumer needs it.
+	Warn(format string, args ...any)
+	// Warnings returns the warnings recorded so far, in order. The caller
+	// must not mutate the returned slice.
+	Warnings() []string
 }
 
 // StderrLogger is the default Logger implementation. Normal diagnostics
@@ -63,6 +73,15 @@ type StderrLogger struct {
 	Level Verbosity
 	Out   io.Writer // defaults to os.Stdout if nil
 	Err   io.Writer // defaults to os.Stderr if nil (reserved for Fail/error paths added later)
+
+	// JSONMode suppresses printing, because stdout then carries the JSON
+	// document and any prose written ahead of it makes that document
+	// unparseable. Warnings are still collected.
+	JSONMode bool
+
+	// warnings is append-only for the life of a run. The validation paths
+	// are sequential (no goroutines in aia/crl/main), so no lock is needed.
+	warnings []string
 }
 
 // NewStderrLogger constructs a StderrLogger at the given verbosity that
@@ -72,12 +91,13 @@ func NewStderrLogger(level Verbosity) *StderrLogger {
 }
 
 // Normal implements Logger.Normal. Output is discarded unless verbosity
-// is LevelNormal, matching the original main-package logNormal helper.
+// is LevelNormal, matching the original main-package logNormal helper,
+// and is also discarded in JSON mode so stdout stays a pure document.
 // The formatted output passes through display.SanitizeTerminal so
 // untrusted certificate fields logged by subpackages (aia, crl) cannot
 // inject terminal escape sequences.
 func (l *StderrLogger) Normal(format string, args ...any) {
-	if l.Level != LevelNormal {
+	if l.Level != LevelNormal || l.JSONMode {
 		return
 	}
 	w := l.Out
@@ -86,6 +106,27 @@ func (l *StderrLogger) Normal(format string, args ...any) {
 	}
 	fmt.Fprint(w, display.SanitizeTerminal(fmt.Sprintf(format, args...)))
 }
+
+// Warn implements Logger.Warn. The message is always recorded; printing
+// follows Normal's rules (normal verbosity, not JSON mode). Recording
+// before the gate is deliberate: if it happened after, JSON mode would
+// convert "stdout polluted" into "diagnostic silently lost".
+func (l *StderrLogger) Warn(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	l.warnings = append(l.warnings, strings.TrimRight(msg, "\n"))
+	if l.Level != LevelNormal || l.JSONMode {
+		return
+	}
+	w := l.Out
+	if w == nil {
+		w = os.Stdout
+	}
+	fmt.Fprint(w, display.SanitizeTerminal(msg))
+}
+
+// Warnings implements Logger.Warnings. The returned slice is the live
+// backing array; callers must not mutate it.
+func (l *StderrLogger) Warnings() []string { return l.warnings }
 
 // Verbosity implements Logger.Verbosity.
 func (l *StderrLogger) Verbosity() Verbosity { return l.Level }
@@ -114,16 +155,22 @@ type Validator struct {
 	MaxRemoteCertBytes int64
 }
 
-// New builds a Validator with the supplied verbosity and size limits.
-// The HTTP client is configured with the supplied per-fetch timeout
-// and a CheckRedirect policy that caps redirects at maxRedirects.
+// New builds a Validator with the supplied verbosity, output mode and
+// size limits. The HTTP client is configured with the supplied per-fetch
+// timeout and a CheckRedirect policy that caps redirects at maxRedirects.
 //
 // Pass logger=nil to construct a default StderrLogger at the supplied
-// level; pass a non-nil logger to override (useful in tests).
+// level; pass a non-nil logger to override (useful in tests). jsonMode
+// suppresses printing from that default logger so stdout carries only the
+// JSON document; it is ignored when a logger is supplied, since the
+// caller then owns the logger's configuration.
 func New(level Verbosity, perFetchTimeout time.Duration, maxRedirects int,
-	maxAIA, maxCRL, maxLocal, maxRemote int64, logger Logger) *Validator {
+	maxAIA, maxCRL, maxLocal, maxRemote int64, logger Logger, jsonMode bool) *Validator {
 	if logger == nil {
 		logger = NewStderrLogger(level)
+		if sl, ok := logger.(*StderrLogger); ok {
+			sl.JSONMode = jsonMode
+		}
 	}
 	client := &http.Client{
 		Timeout: perFetchTimeout,

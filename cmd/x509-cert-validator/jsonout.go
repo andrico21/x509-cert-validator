@@ -38,7 +38,21 @@ type validateJSON struct {
 	Leaf           *certinfo.CertInfo    `json:"leaf,omitempty"`
 	Chains         [][]certinfo.CertInfo `json:"chains,omitempty"`
 	CRLChecked     bool                  `json:"crl_checked"`
-	Expiry         *expiryJSON           `json:"expiry,omitempty"`
+
+	// HostnameChecked is emitted unconditionally, mirroring CRLChecked.
+	// omitempty on a bool would drop false, which would leave a run where
+	// hostname verification did NOT happen byte-identical to one where it
+	// did - inverting the fix this field exists to make.
+	HostnameChecked bool `json:"hostname_checked"`
+	// DNSName is the name verification was performed against, when one was.
+	DNSName string `json:"dns_name,omitempty"`
+	// Warnings carries the security-relevant diagnostics that the human
+	// output prints, so a machine consumer can see them even though -json
+	// suppresses prose. Populated from the run logger's collector; absent
+	// entirely on a clean run.
+	Warnings []string `json:"warnings,omitempty"`
+
+	Expiry *expiryJSON `json:"expiry,omitempty"`
 }
 
 // chainsToInfos converts verified chains (leaf-first) into CertInfo rows for

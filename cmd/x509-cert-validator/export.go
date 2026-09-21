@@ -23,7 +23,7 @@ import (
 func exportCerts(certs []*x509.Certificate, cfg *cli.Config) {
 	certs = dedupeCerts(certs)
 	if len(certs) == 0 {
-		logNormal("⚠️  Export: no certificates matched -export-scope %s; nothing written.\n", cfg.ExportScope)
+		warnAndLog("⚠️  Export: no certificates matched -export-scope %s; nothing written.\n", cfg.ExportScope)
 		return
 	}
 	if cfg.ExportFormat == "split" {

@@ -593,6 +593,29 @@ make_sparse_or_real_file "${PKI}/large_file.crt" 2
 # DER format fixture (convert PEM leaf to DER)
 openssl x509 -in "${PKI}/leaf_valid.crt" -outform DER -out "${PKI}/leaf_valid.der" 2>/dev/null
 
+# Machine-readable diagnostics fixture: a leaf whose CRL distribution point uses
+# a scheme the tool skips, so a -crl run has to report a security diagnostic
+# from internal/crl. That diagnostic must reach -json consumers via warnings[],
+# and it must not be written to stdout ahead of the document.
+LDAP_KEY="${PKI}/leaf_ldap.key"
+LDAP_CSR="${PKI}/leaf_ldap.csr"
+LDAP_CRT="${PKI}/leaf_ldap.crt"
+LDAP_EXT="${PKI}/leaf_ldap_ext.cnf"
+gen_rsa_key 2048 "${LDAP_KEY}"
+csr "${LDAP_KEY}" "${LDAP_CSR}" "ldap.local"
+write_file "${LDAP_EXT}" "
+[v3_leaf]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:ldap.local
+authorityInfoAccess = caIssuers;URI:${HTTP_URL}/inter.pem
+crlDistributionPoints = URI:ldap://pki.test.example.com/inter.crl
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+"
+issue_with_ca "${INTER_CA_CNF}" "${LDAP_CSR}" "${LDAP_CRT}" "${LDAP_EXT}" "v3_leaf" "sha256"
+
 # -----------------------------------------------------------------------------
 # 10. Security: Weak Cipher (implemented as SHA1-signed cert policy rejection)
 # -----------------------------------------------------------------------------
@@ -1032,6 +1055,30 @@ add_test "48. Help: -export -? shows help, not the export flow" "PASS" "EXAMPLES
 
 add_test "49. Help: -h output omits legacy-alias note" "PASS" "NO_ALIAS_NOTE" \
   "${TOOL_BIN} -h 2>&1 | grep -Eq 'legacy flag|hidden alias|remain accepted' || echo NO_ALIAS_NOTE"
+
+# ---- NEW TESTS (50..52): machine-readable diagnostics (warnings[] / hostname_checked) ----
+#
+# These pin the contract that -json stdout is a pure document and that the
+# security diagnostics the human output prints are reachable by machine
+# consumers. They run against the real binary because the defect they guard
+# (diagnostics emitted from internal/crl landing on stdout) is invisible to a
+# unit test of the main package alone.
+
+# 50 is the regression for a CRL diagnostic emitted from a subpackage: stdout
+# must begin with the document, and the diagnostic must appear in warnings[].
+# -aia is required to complete the chain, because the CRL check only runs after
+# a successful verify.
+add_test "50. Validate: -json stays parseable when CRL emits a diagnostic" "PASS" "JSON_PURE_WITH_WARNING" \
+  "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_ldap.crt -root ${ROOT_CRT} -aia -crl -json 2>/dev/null)\"; [ \"\${o:0:1}\" = '{' ] && printf '%s' \"\$o\" | grep -q 'unsupported scheme' && echo JSON_PURE_WITH_WARNING"
+
+# 51 pins hostname_checked as an always-present field whose value tracks whether
+# a hostname check actually ran - the whole point of the field.
+add_test "51. Validate: -json reports hostname_checked honestly" "PASS" "HOSTNAME_FIELD_OK" \
+  "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${ROOT_CRT} -aia -json 2>/dev/null)\"; printf '%s' \"\$o\" | grep -q '\"hostname_checked\": false' && o2=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${ROOT_CRT} -aia -dns valid.local -json 2>/dev/null)\" && printf '%s' \"\$o2\" | grep -q '\"hostname_checked\": true' && printf '%s' \"\$o2\" | grep -q '\"dns_name\": \"valid.local\"' && echo HOSTNAME_FIELD_OK"
+
+# 52 pins the additive half: a clean run gains no warnings key at all.
+add_test "52. Validate: -json omits warnings on a clean run" "PASS" "NO_WARNINGS_KEY" \
+  "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${ROOT_CRT} -aia -json 2>/dev/null)\"; printf '%s' \"\$o\" | grep -q '\"warnings\"' || echo NO_WARNINGS_KEY"
 
 # ---- End of test definitions ----
 
