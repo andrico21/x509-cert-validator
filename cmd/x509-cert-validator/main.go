@@ -223,7 +223,6 @@ func main() {
 
 	// --- 3. Load Roots (File/URL or System) ---
 	var roots *x509.CertPool
-	var rootCerts []*x509.Certificate
 	var poolList []*x509.Certificate // For signature-based parent checks + AIA walk
 
 	if *rootPath != "" {
@@ -236,7 +235,6 @@ func main() {
 				warnAndLog("  ⚠️ WARNING: Root input cert is NOT marked as CA\n")
 			}
 			roots.AddCert(cert)
-			rootCerts = append(rootCerts, cert)
 			poolList = append(poolList, cert)
 		}
 	} else {
@@ -255,7 +253,6 @@ func main() {
 
 	// --- 4. Load Intermediates (CLI args after flags) ---
 	inters := x509.NewCertPool()
-	var discoveredIntermediates []*x509.Certificate // what we actually have locally (server-sent + AIA fetched + CLI inters)
 
 	if len(cfg.IntermediateArgs) > 0 {
 		logNormal("\n--- Loading Intermediates (CLI) ---\n")
@@ -269,7 +266,6 @@ func main() {
 					warnAndLog("  ⚠️ WARNING: Intermediate is NOT marked as CA\n")
 				}
 				inters.AddCert(cert)
-				discoveredIntermediates = append(discoveredIntermediates, cert)
 				poolList = append(poolList, cert)
 			}
 		}
@@ -297,7 +293,6 @@ func main() {
 			extra := targetCerts[i]
 			printShortID("Server-Sent", extra)
 			inters.AddCert(extra)
-			discoveredIntermediates = append(discoveredIntermediates, extra)
 			poolList = append(poolList, extra)
 		}
 	}
@@ -359,8 +354,10 @@ func main() {
 				logNormal("ℹ️  Fetched cert is Self-Signed Root (%s, Key=%s). Stopping fetch.\n",
 					x509util.CnOrDN(parentCert), x509util.CertPublicKeySummary(parentCert))
 
-				// Do NOT automatically trust it for verification. Only keep for optional bundling output.
-				rootCerts = append(rootCerts, parentCert)
+				// A fetched root is never trusted for verification, and it is no
+				// longer retained for export either: an exported bundle must hold
+				// only certificates from a verified chain, and this one was served
+				// by a URL the audited certificate itself named.
 				// Note: not appending to poolList here; we break out of the AIA walk
 				// immediately and poolList is not read again in this branch.
 
@@ -368,7 +365,6 @@ func main() {
 			}
 
 			inters.AddCert(parentCert)
-			discoveredIntermediates = append(discoveredIntermediates, parentCert)
 			poolList = append(poolList, parentCert)
 			logNormal("✅ Added fetched certificate: %s (Key=%s)\n", parentCert.Subject, x509util.CertPublicKeySummary(parentCert))
 
@@ -431,10 +427,12 @@ func main() {
 				toExport = append(toExport, ch...)
 			}
 		} else { // "ca": the CA trust chain (intermediates + optional root), excludes the leaf.
+			// Only certificates that took part in a verified chain may be
+			// exported. There is deliberately no fallback to the certificates
+			// merely discovered while loading: those were fetched from
+			// certificate-declared URLs and never shown to x509.Verify, so an
+			// artifact documented as the verified chain must not contain them.
 			toExport = bundle.FromVerifiedChains(chains, *includeRoot)
-			if len(toExport) == 0 {
-				toExport = bundle.FromDiscovered(discoveredIntermediates, rootCerts, *includeRoot)
-			}
 		}
 		exportCerts(toExport, cfg)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,14 +13,17 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode"
 
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
+	"github.com/andrico21/x509-cert-validator/internal/cli"
 	"github.com/andrico21/x509-cert-validator/internal/display"
 	"github.com/andrico21/x509-cert-validator/internal/errs"
+	"github.com/andrico21/x509-cert-validator/internal/validator"
 	"github.com/andrico21/x509-cert-validator/internal/x509util"
 )
 
@@ -488,6 +492,53 @@ func TestVerifyFailureHintAuthorityNotSelfSigned(t *testing.T) {
 	got := hintText(verifyFailureHint(err, nil, false, false, "leaf.pem", "", "any"))
 	if !strings.Contains(got, "-aia") {
 		t.Errorf("want intermediates tip, got: %q", got)
+	}
+}
+
+// TestExportCAScopeOverLeafAnchorChainWritesNothing is the regression for the
+// removed export fallback. For a verified chain of [leaf, anchor] the ca scope
+// holds nothing - the leaf is excluded by scope and the self-signed anchor
+// unless -include-root - so the export must write nothing and say so, instead
+// of substituting certificates that were merely discovered while loading and
+// never shown to x509.Verify.
+func TestExportCAScopeOverLeafAnchorChainWritesNothing(t *testing.T) {
+	oldVerbosity, oldJSON, oldValidator := verbosity, jsonMode, runValidator
+	defer func() {
+		verbosity, jsonMode, runValidator = oldVerbosity, oldJSON, oldValidator
+	}()
+	verbosity, jsonMode = LevelNormal, false
+
+	var buf bytes.Buffer
+	logger := &validator.StderrLogger{Level: validator.LevelNormal, Out: &buf}
+	runValidator = validator.New(validator.LevelNormal, time.Second, 3, 0, 0, 0, 0, logger, false)
+
+	root, rootKey := selfSignedRoot(t, "Test Root CA")
+	leaf, _ := issuedCert(t, "leaf.local", root, rootKey)
+	chains := [][]*x509.Certificate{{leaf, root}}
+
+	// Precondition: the ca scope really is empty for this chain, which is what
+	// used to trigger the fallback.
+	selected := bundle.FromVerifiedChains(chains, false)
+	if len(selected) != 0 {
+		t.Fatalf("precondition: want an empty ca scope for [leaf, anchor], got %d certs", len(selected))
+	}
+	// And -include-root selects exactly the anchor, so the scope is not simply
+	// broken for this shape.
+	withRoot := bundle.FromVerifiedChains(chains, true)
+	if len(withRoot) != 1 || withRoot[0] != root {
+		t.Fatalf("with -include-root want only the anchor, got %d certs", len(withRoot))
+	}
+
+	dest := filepath.Join(t.TempDir(), "ca-bundle.pem")
+	cfg := &cli.Config{Export: dest, ExportFormat: "bundle", ExportScope: "ca"}
+	exportCerts(selected, cfg)
+
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Errorf("an empty ca selection wrote %s; it must write nothing", dest)
+	}
+	ws := logger.Warnings()
+	if len(ws) == 0 || !strings.Contains(ws[0], "no certificates matched") {
+		t.Errorf("want a 'no certificates matched' warning, got %q", ws)
 	}
 }
 
