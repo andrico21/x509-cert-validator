@@ -740,9 +740,6 @@ func fetchAIA(ctx context.Context, cert *x509.Certificate) (*x509.Certificate, e
 	if res.HasUnsupportedAlgo {
 		hasUnsupportedAlgo = true
 	}
-	if res.HasInsecureAlgo {
-		hasInsecureAlgo = true
-	}
 	if res.Parent != nil {
 		flagUnsupportedIfNeeded(res.Parent)
 	}
@@ -968,9 +965,6 @@ func loadDir(dir string) []*x509.Certificate {
 		if res.HasUnsupportedAlgo {
 			hasUnsupportedAlgo = true
 		}
-		if res.HasInsecureAlgo {
-			hasInsecureAlgo = true
-		}
 		for _, c := range res.Certs {
 			flagUnsupportedIfNeeded(c)
 			all = append(all, c)
@@ -1107,9 +1101,6 @@ func parseCertsFromData(data []byte, source string) []*x509.Certificate {
 	res, err := certload.ParseCerts(data, source)
 	if res.HasUnsupportedAlgo {
 		hasUnsupportedAlgo = true
-	}
-	if res.HasInsecureAlgo {
-		hasInsecureAlgo = true
 	}
 	for _, msg := range res.SkippedBlocks {
 		warnAndLog("%s\n", msg)

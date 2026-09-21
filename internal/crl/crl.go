@@ -194,11 +194,20 @@ func (c *Checker) Check(ctx context.Context, chains [][]*x509.Certificate, now t
 
 					parsed, err := x509util.ParseRevocationListFromData(data)
 					if err != nil {
+						// Parse stage. The unsupported half stays as a zero-cost
+						// forward-compatibility guard: after the exact-match change
+						// it is not steerable (a CRL parse error cannot be made to
+						// EQUAL one of the two known messages), and errors.Is cannot
+						// fire here because x509.ErrUnsupportedAlgorithm is a
+						// verify-stage sentinel.
+						//
+						// The insecure half is gone: x509.InsecureAlgorithmError
+						// comes only from checkSignature, which parsing never calls,
+						// so a CRL parse error can never be one - and a raw parsed
+						// document is attacker-supplied remote content, the worst
+						// place to classify on text it can influence.
 						if errs.LooksLikeUnsupportedAlgoErr(err) {
 							res.HasUnsupportedAlgo = true
-						}
-						if errs.LooksLikeInsecureAlgoErr(err) {
-							res.HasInsecureAlgo = true
 						}
 						errMsgs = append(errMsgs, fmt.Sprintf("%s: parse failed", cdpURL))
 						continue

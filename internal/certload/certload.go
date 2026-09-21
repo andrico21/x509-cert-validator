@@ -43,10 +43,15 @@ func ReadWithLimit(r io.Reader, limit int64) ([]byte, error) {
 // algorithm-rejection flags discovered along the way. Callers OR these
 // flags into their run-scoped state to surface diagnostic hints later
 // (e.g., the "GOST/SHA1" tips emitted by handleVerifyError).
+//
+// Only HasUnsupportedAlgo is populated here. There is no insecure-algorithm
+// flag because x509.InsecureAlgorithmError comes exclusively from the signature
+// check, which parsing never performs - so a parse error can never be one, and
+// the only thing that could set such a flag would be a phrase inside an error
+// message that a certificate field can influence.
 type ParseResult struct {
 	Certs              []*x509.Certificate
 	HasUnsupportedAlgo bool
-	HasInsecureAlgo    bool
 	// SkippedBlocks holds messages for PEM blocks that failed to parse;
 	// callers may surface these as warnings. One entry per skipped block.
 	SkippedBlocks []string
@@ -58,9 +63,9 @@ type ParseResult struct {
 // certificates could be parsed at all; the source label is included in
 // the error and skip messages so callers can identify the input.
 //
-// The HasUnsupportedAlgo / HasInsecureAlgo flags reflect rejections seen
-// during parsing and are populated even on the success path so callers
-// can show diagnostic hints alongside successful loads.
+// The HasUnsupportedAlgo flag reflects rejections seen during parsing and
+// is populated even on the success path so callers can show diagnostic hints
+// alongside successful loads.
 func ParseCerts(data []byte, source string) (ParseResult, error) {
 	var res ParseResult
 	blockData := data
@@ -78,9 +83,6 @@ func ParseCerts(data []byte, source string) (ParseResult, error) {
 			if errs.LooksLikeUnsupportedAlgoErr(err) {
 				res.HasUnsupportedAlgo = true
 			}
-			if errs.LooksLikeInsecureAlgoErr(err) {
-				res.HasInsecureAlgo = true
-			}
 			res.SkippedBlocks = append(res.SkippedBlocks, fmt.Sprintf("Skipping unparsable block in %s: %v", source, err))
 			continue
 		}
@@ -95,9 +97,6 @@ func ParseCerts(data []byte, source string) (ParseResult, error) {
 		}
 		if errs.LooksLikeUnsupportedAlgoErr(err) {
 			res.HasUnsupportedAlgo = true
-		}
-		if errs.LooksLikeInsecureAlgoErr(err) {
-			res.HasInsecureAlgo = true
 		}
 		return res, fmt.Errorf("no certificates found in %s", source)
 	}
@@ -128,9 +127,6 @@ func ParseCertsSafe(data []byte) ParseResult {
 		if errs.LooksLikeUnsupportedAlgoErr(err) {
 			res.HasUnsupportedAlgo = true
 		}
-		if errs.LooksLikeInsecureAlgoErr(err) {
-			res.HasInsecureAlgo = true
-		}
 	}
 	if len(res.Certs) == 0 {
 		c, err := x509.ParseCertificate(data)
@@ -140,9 +136,6 @@ func ParseCertsSafe(data []byte) ParseResult {
 		}
 		if errs.LooksLikeUnsupportedAlgoErr(err) {
 			res.HasUnsupportedAlgo = true
-		}
-		if errs.LooksLikeInsecureAlgoErr(err) {
-			res.HasInsecureAlgo = true
 		}
 	}
 	return res

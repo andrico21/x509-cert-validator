@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -130,20 +131,34 @@ func TestSerialHex(t *testing.T) {
 
 func TestLooksLikeUnsupportedAlgoErr(t *testing.T) {
 	cases := []struct {
+		name string
 		err  error
 		want bool
 	}{
-		{nil, false},
-		{errors.New("connection refused"), false},
-		{errors.New("x509: algorithm unimplemented"), true},
-		{errors.New("unknown public key algorithm"), true},
-		{errors.New("unknown signature algorithm"), true},
-		{errors.New("unsupported elliptic curve"), true},
-		{errors.New("unsupported algorithm GOST"), true},
+		{"nil", nil, false},
+		{"unrelated", errors.New("connection refused"), false},
+		// Verify-stage: the typed sentinel.
+		{"typed sentinel", x509.ErrUnsupportedAlgorithm, true},
+		{"wrapped sentinel", fmt.Errorf("verify: %w", x509.ErrUnsupportedAlgorithm), true},
+		// Our own sentinel, for callers that wrap a rejection.
+		{"our sentinel", errs.ErrUnsupportedAlgo, true},
+		// Parse-stage: untyped errors.New in crypto/x509, matched exactly.
+		{"parse curve", errors.New("x509: unsupported elliptic curve"), true},
+		{"parse key algo", errors.New("x509: unknown public key algorithm"), true},
+		// The exact two above, with a certificate-controlled prefix attached:
+		// each must MISS, because a full-message match is what keeps an echoed
+		// field value from steering classification.
+		{"echoed text before the phrase", errors.New(`x509: cannot parse URI "x509: unsupported elliptic curve": bad`), false},
+		{"echoed text after the phrase", errors.New("x509: unsupported elliptic curve.example.com"), false},
+		// Substrings that no stdlib message produces (verified absent), kept as
+		// negatives so they cannot be reintroduced as matchers.
+		{"dropped substring: unknown signature algorithm", errors.New("unknown signature algorithm"), false},
+		{"dropped substring: bare unsupported algorithm", errors.New("unsupported algorithm GOST"), false},
+		{"dropped substring: bare algorithm unimplemented", errors.New("x509: algorithm unimplemented"), false},
 	}
 	for _, c := range cases {
 		if got := errs.LooksLikeUnsupportedAlgoErr(c.err); got != c.want {
-			t.Errorf("err=%v: want %v, got %v", c.err, c.want, got)
+			t.Errorf("%s: err=%v: want %v, got %v", c.name, c.err, c.want, got)
 		}
 	}
 }
@@ -155,8 +170,25 @@ func TestLooksLikeInsecureAlgoErr(t *testing.T) {
 	if errs.LooksLikeInsecureAlgoErr(errors.New("connection refused")) {
 		t.Error("non-matching err should be false")
 	}
-	if !errs.LooksLikeInsecureAlgoErr(errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")) {
-		t.Error("matching err should be true")
+	// The genuine rejection, as crypto/x509 actually returns it.
+	if !errs.LooksLikeInsecureAlgoErr(x509.InsecureAlgorithmError(x509.SHA1WithRSA)) {
+		t.Error("a real x509.InsecureAlgorithmError should classify")
+	}
+	if !errs.LooksLikeInsecureAlgoErr(fmt.Errorf("verify: %w", x509.InsecureAlgorithmError(x509.SHA1WithRSA))) {
+		t.Error("a wrapped x509.InsecureAlgorithmError should classify")
+	}
+	// Our sentinel, for callers that wrap a rejection.
+	if !errs.LooksLikeInsecureAlgoErr(errs.ErrInsecureAlgo) {
+		t.Error("our sentinel should classify")
+	}
+	// The regression: text alone must never classify. This is the exact string
+	// the old substring matcher accepted, and a certificate can put this phrase
+	// into a parse error through a field value.
+	if errs.LooksLikeInsecureAlgoErr(errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")) {
+		t.Error("a bare error carrying the phrase must NOT classify: text can be certificate-controlled")
+	}
+	if errs.LooksLikeInsecureAlgoErr(errors.New(`x509: cannot parse URI "http://insecure algorithm.example/": bad`)) {
+		t.Error("an echoed certificate field must NOT classify")
 	}
 }
 
@@ -468,13 +500,32 @@ func TestVerifyFailureHintUnsupportedAlgoOnGenericError(t *testing.T) {
 
 func TestVerifyFailureHintInsecureAlgo(t *testing.T) {
 	root, _ := selfSignedRoot(t, "Leaf For Hint")
-	err := errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")
+	// The real rejection type, because that is what classification now keys on:
+	// a bare errors.New carrying the same words must NOT classify, since the
+	// text can be certificate-controlled.
+	err := x509.InsecureAlgorithmError(x509.SHA1WithRSA)
 	got := hintText(verifyFailureHint(err, root, false, false, "leaf.pem", "", "any"))
 	if !strings.Contains(got, "insecure signature algorithm policy") {
 		t.Errorf("want insecure-algo hint, got: %q", got)
 	}
 	if !strings.Contains(got, "Leaf Signature Algorithm:") {
 		t.Errorf("want leaf details when leaf provided, got: %q", got)
+	}
+}
+
+// TestVerifyFailureHintIgnoresInsecureAlgoText is the counterpart: an error
+// whose text merely contains the phrase must not produce the hint on its own.
+// The run-global flag exists for the genuine verify-stage case, so a caller
+// that really did observe a rejection can still set it.
+func TestVerifyFailureHintIgnoresInsecureAlgoText(t *testing.T) {
+	err := errors.New("x509: cannot verify signature: insecure algorithm SHA1-RSA")
+	if got := hintText(verifyFailureHint(err, nil, false, false, "leaf.pem", "", "any")); strings.Contains(got, "insecure signature algorithm policy") {
+		t.Errorf("text alone must not produce the insecure-algo hint, got: %q", got)
+	}
+	// With the flag set - as handleVerifyError does on a genuine rejection -
+	// the hint returns.
+	if got := hintText(verifyFailureHint(err, nil, false, true, "leaf.pem", "", "any")); !strings.Contains(got, "insecure signature algorithm policy") {
+		t.Errorf("with hasInsecure set the hint should fire, got: %q", got)
 	}
 }
 

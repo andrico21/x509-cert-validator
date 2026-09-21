@@ -62,10 +62,14 @@ func NewFetcher(client *http.Client, logger validator.Logger, maxBytes int64) *F
 // FetchResult bundles the fetched parent certificate (or nil on
 // failure) with algorithm-rejection findings discovered during parsing.
 // Callers OR the flags into their run-scoped state.
+//
+// Only HasUnsupportedAlgo exists here: it is propagated from certload, whose
+// parse stage can genuinely reject an unsupported curve or key algorithm. There
+// is no insecure-algorithm counterpart, because parsing never performs a
+// signature check and so can never yield x509.InsecureAlgorithmError.
 type FetchResult struct {
 	Parent             *x509.Certificate
 	HasUnsupportedAlgo bool
-	HasInsecureAlgo    bool
 }
 
 // Fetch walks cert.IssuingCertificateURL in order and returns the first
@@ -73,9 +77,9 @@ type FetchResult struct {
 // when every URL failed; the error wraps the last underlying cause for
 // operator visibility.
 //
-// FetchResult.HasUnsupportedAlgo / HasInsecureAlgo are populated even on
-// the success path so the caller can surface algorithm-rejection
-// diagnostic hints alongside otherwise-OK fetches.
+// FetchResult.HasUnsupportedAlgo is populated even on the success path so the
+// caller can surface algorithm-rejection diagnostic hints alongside
+// otherwise-OK fetches.
 func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResult, error) {
 	var res FetchResult
 	var lastErr error
@@ -135,9 +139,6 @@ func (f *Fetcher) Fetch(ctx context.Context, cert *x509.Certificate) (FetchResul
 		// context if URL 2 ultimately succeeds.
 		if parsed.HasUnsupportedAlgo {
 			res.HasUnsupportedAlgo = true
-		}
-		if parsed.HasInsecureAlgo {
-			res.HasInsecureAlgo = true
 		}
 
 		if len(parsed.Certs) > 0 {
