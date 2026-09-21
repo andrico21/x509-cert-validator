@@ -949,6 +949,25 @@ func loadDir(dir string) []*x509.Certificate {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
+		// Only regular files are opened. os.Open on a FIFO blocks until a
+		// writer appears, which would hang the scan before readWithLimit could
+		// apply any cap; a device or socket is likewise not a certificate.
+		//
+		// os.Stat (which follows symlinks) rather than e.Type().IsRegular():
+		// ReadDir does not resolve links, so a directory of symlinked
+		// certificates is a plausible operator layout and a DirEntry check
+		// would silently start skipping it. A Stat error means the link
+		// dangles, which is worth reporting for the same reason.
+		// #nosec G304 G703 -- scanning a user-specified directory of certificate files is the tool's purpose; the path being a variable is by design.
+		fi, statErr := os.Stat(p)
+		if statErr != nil {
+			warnAndLog("⚠️  Skipping %s: %v\n", p, statErr)
+			continue
+		}
+		if !fi.Mode().IsRegular() {
+			warnAndLog("⚠️  Skipping %s: not a regular file (%s)\n", p, fi.Mode().Type())
+			continue
+		}
 		// #nosec G304 G703 -- scanning a user-specified directory of certificate files is the tool's purpose; the path being a variable is by design.
 		f, err := os.Open(p)
 		if err != nil {

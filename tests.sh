@@ -1089,6 +1089,14 @@ add_test "53. Validate: warns when the trust anchor arrives over the wire" "PASS
 add_test "54. Validate: no anchor warning for a local -root file" "PASS" "NO_ANCHOR_WARNING" \
   "o=\"\$(${TOOL_BIN} -cert ${PKI}/leaf_valid.crt -root ${ROOT_CRT} -aia -json 2>/dev/null)\"; printf '%s' \"\$o\" | grep -q 'without authenticating the peer' || echo NO_ANCHOR_WARNING"
 
+# 55 pins the directory-scan entry filter. A FIFO would block os.Open before any
+# size cap applies, so the scan must skip it; a symlinked certificate must still
+# be followed, because os.ReadDir does not resolve links and an entry-type check
+# would silently start skipping a directory laid out that way. The 5s timeout is
+# the actual assertion: hanging fails the test with rc 124.
+add_test "55. Inspect: skips a FIFO but follows a symlinked certificate" "PASS" "DIR_SCAN_OK" \
+  "d=\"\$(mktemp -d)\"; cp ${PKI}/leaf_valid.crt \"\$d/real.crt\"; ln -s \"\$d/real.crt\" \"\$d/link.crt\"; mkfifo \"\$d/pipe.crt\"; o=\"\$(timeout 5 ${TOOL_BIN} -inspect -no-color -cert \"\$d\" 2>&1)\"; rc=\$?; [ \$rc -eq 0 ] && printf '%s' \"\$o\" | grep -q 'not a regular file' && [ \"\$(printf '%s' \"\$o\" | grep -c 'valid.local')\" -ge 2 ] && echo DIR_SCAN_OK; rm -rf \"\$d\""
+
 # ---- End of test definitions ----
 
 run_all_tests
