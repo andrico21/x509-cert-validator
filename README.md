@@ -376,8 +376,8 @@ The validate-document fields outside `leaf`/`chains` are:
 | `root_trust` | string | which trust store supplied the anchors |
 | `leaf`, `chains` | `CertInfo`, `[][]CertInfo` | as above |
 | `crl_checked` | bool | always present |
-| `hostname_checked` | bool | **always present.** `true` only when a hostname check actually ran, i.e. `-dns` or `-sni` was supplied for an `https://` probe. A run that verified the chain but skipped hostname verification reports `"ok": true` with `"hostname_checked": false` - check it before treating `ok` as "the endpoint is trustworthy". |
-| `dns_name` | string | the name verification ran against; omitted when none ran |
+| `hostname_checked` | bool | **always present. Records whether a hostname check _ran_ - not whether it passed.** `true` when `-dns` or `-sni` supplied a name to verify against; `false` when neither did, so no hostname check happened at all. Both combinations are meaningful: `"ok": true` with `"hostname_checked": false` is a chain that verified while the endpoint's identity went unchecked - do not read `ok` alone as "this is the right server". `"ok": false` with `"hostname_checked": true` is a check that ran and **failed**; `error` says which name was expected. |
+| `dns_name` | string | the name verification ran against; omitted when none ran. Present whenever `hostname_checked` is `true`, including on a failed match. |
 | `warnings` | []string | security-relevant diagnostics that the human output would print, so machine consumers see them even though `-json` suppresses prose. Omitted entirely when there are none. |
 
 > `warnings` carries decisions and inferences about untrusted input - a trust

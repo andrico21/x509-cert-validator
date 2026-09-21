@@ -13,11 +13,13 @@ document, and one export configuration that used to write a file now writes noth
 
 ## Breaking changes
 
-- **`-json` validate gains `hostname_checked`, always present.** `true` only when a hostname check
-  actually ran (`-dns` or `-sni` supplied for an `https://` probe). Previously a chain-only success
-  and a hostname-verified success produced byte-identical output, so automation could not tell an
-  unverified endpoint from a verified one. A strict-schema consumer that rejects unknown keys will
-  need updating. `dns_name` and `warnings` are also added, both omitted when empty.
+- **`-json` validate gains `hostname_checked`, always present.** It records whether a hostname check
+  *ran* - not whether it passed. `true` when `-dns` or `-sni` supplied a name to verify against.
+  Previously a chain-only success and a hostname-verified success produced byte-identical output, so
+  automation could not tell an unverified endpoint from a verified one. A check that ran and failed
+  is `"ok": false` with `"hostname_checked": true`; the outcome is in `ok`/`error`. A strict-schema
+  consumer that rejects unknown keys will need updating. `dns_name` and `warnings` are also added,
+  both omitted when empty.
 - **`-json` stdout is now the document and nothing else.** AIA and CRL diagnostics used to print to
   stdout *above* the JSON, so a run against a certificate declaring a non-`http(s)` CRL
   distribution point emitted a stream that did not parse. Since the distribution-point list comes

@@ -43,8 +43,13 @@ type validateJSON struct {
 	// omitempty on a bool would drop false, which would leave a run where
 	// hostname verification did NOT happen byte-identical to one where it
 	// did - inverting the fix this field exists to make.
+	//
+	// It records whether the check RAN, not its result: a check that ran
+	// and failed reports OK=false with HostnameChecked=true. That is why
+	// no result-implying name ("matching", "verified") fits.
 	HostnameChecked bool `json:"hostname_checked"`
 	// DNSName is the name verification was performed against, when one was.
+	// Set whenever HostnameChecked is true, including on a failed match.
 	DNSName string `json:"dns_name,omitempty"`
 	// Warnings carries the security-relevant diagnostics that the human
 	// output prints, so a machine consumer can see them even though -json
