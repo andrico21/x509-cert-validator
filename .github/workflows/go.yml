@@ -41,17 +41,16 @@ jobs:
 
       - name: staticcheck
         run: |
-          # Go 1.27 support is not yet in a tagged staticcheck release (latest is
-          # 2026.1 / v0.7.0, which fails on Go 1.27 export-data version 4). Pin to
-          # the dev commit that has it; revert to @latest once staticcheck tags a
-          # release that supports Go 1.27.
-          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0-0.dev.0.20260630164810-d69e7ee19e2d
+          # 2026.2 (module tag v0.8.1) added Go 1.27 support, so the temporary
+          # dev-commit pin for Go 1.27 export-data version 4 is gone. Keep the
+          # exact tag rather than @latest so CI is reproducible.
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
           staticcheck ./...
 
       - name: gosec
         run: |
           curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.28.0
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.29.0
           "$(go env GOPATH)/bin/gosec" -quiet ./...
 
   build:
