@@ -136,7 +136,10 @@ func main() {
 	jsonMode = cfg.JSON
 	daysThreshold = cfg.Days
 	validationTime = time.Now()
-	if !cfg.AtTime.IsZero() {
+	// Presence, not the zero value: 0001-01-01T00:00:00Z is a legitimate -at
+	// input, and treating it as "absent" silently evaluated at the wall clock
+	// while reporting the verdict as if it applied to the requested instant.
+	if cfg.AtTimeSet {
 		validationTime = cfg.AtTime
 	}
 

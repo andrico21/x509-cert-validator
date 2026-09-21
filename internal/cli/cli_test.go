@@ -214,6 +214,48 @@ func TestParseRejectsBadAtTime(t *testing.T) {
 	}
 }
 
+func TestParseAtTimeSet(t *testing.T) {
+	// Absent: presence must be distinguishable from the zero value.
+	cfg, err := Parse([]string{"-cert", "leaf.pem"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.AtTimeSet {
+		t.Error("AtTimeSet must be false when -at is absent")
+	}
+
+	// Present, ordinary instant.
+	cfg, err = Parse([]string{"-cert", "leaf.pem", "-at", "2025-12-25T12:00:00Z"}, "test", io.Discard)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !cfg.AtTimeSet {
+		t.Error("AtTimeSet must be true when -at is supplied")
+	}
+
+	// Present, the zero instant: rejected, because crypto/x509 treats a zero
+	// CurrentTime as "use now", so it cannot be honoured. This is the input the
+	// old IsZero() sentinel silently discarded, and it is reachable without
+	// anyone typing it - time.Time{}.Format(time.RFC3339) yields exactly this
+	// string, so a wrapper with an unpopulated timestamp produces it.
+	_, err = Parse([]string{"-cert", "leaf.pem", "-at", "0001-01-01T00:00:00Z"}, "test", io.Discard)
+	if err == nil {
+		t.Fatal("the zero instant must be rejected, not silently replaced by the wall clock")
+	}
+	perr, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T: %v", err, err)
+	}
+	if !strings.Contains(perr.Message, "zero instant") {
+		t.Errorf("the rejection should name the reason, got %q", perr.Message)
+	}
+	// A neighbouring instant is fine, so the rejection is specific rather than
+	// a general narrowing of -at.
+	if _, err := Parse([]string{"-cert", "leaf.pem", "-at", "0001-01-02T00:00:00Z"}, "test", io.Discard); err != nil {
+		t.Errorf("an ordinary early instant must still parse: %v", err)
+	}
+}
+
 // ============================================================================
 // Parse - help / unknown flag exit codes (Fixes 7+8)
 // ============================================================================

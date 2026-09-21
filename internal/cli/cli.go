@@ -67,6 +67,12 @@ type Config struct {
 	DNSName  string
 	SNI      string // already trimmed; host extracted if host:port supplied
 	AtTime   time.Time
+	// AtTimeSet records whether -at was supplied. Presence has to be tracked
+	// explicitly rather than inferred from the zero value, and the zero instant
+	// is additionally rejected at parse time: crypto/x509 treats a zero
+	// CurrentTime as "use now", so it can be neither honoured nor passed
+	// through without the verdict claiming a time it did not use.
+	AtTimeSet bool
 
 	// Switches
 	EnableCRL   bool
@@ -286,9 +292,22 @@ func ParseWithStreams(args []string, progName string, helpOut, errOut io.Writer)
 				ExitCode: 1,
 			}
 		}
+		// The zero instant cannot be honoured, so it is rejected rather than
+		// silently replaced. crypto/x509.VerifyOptions documents CurrentTime as
+		// "If zero, the current time is used", and Verify implements exactly
+		// that, so passing this value through would evaluate at the wall clock
+		// while the run reports the requested instant - a verdict labelled with
+		// a time it did not use. Accepting it and honouring it are mutually
+		// exclusive, so refuse it explicitly.
+		if t.IsZero() {
+			return nil, &ParseError{
+				Message:  "invalid -at time: the zero instant (0001-01-01T00:00:00Z) is not usable, because Go's x509 verification treats a zero time as 'now'; supply a real instant",
+				ExitCode: 1,
+			}
+		}
 		cfg.AtTime = t
+		cfg.AtTimeSet = true
 	}
-
 	// --- Operation mode (default validate; -inspect switches to describe). ---
 	if *inspectMode {
 		cfg.Mode = ModeInspect
