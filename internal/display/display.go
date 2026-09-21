@@ -13,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -109,6 +110,78 @@ func isDisallowedControl(b byte) bool {
 		return false
 	}
 	return b < 0x20 || b == 0x7F
+}
+
+// SanitizeField sanitizes a single untrusted value for embedding in
+// human-readable output. Unlike SanitizeTerminal, which runs on an
+// already-composed message and must preserve the formatter's own
+// whitespace, SanitizeField treats the string as pure data: every
+// control character is replaced, including C1 (U+0080-U+009F), LF, CR
+// and TAB, so a certificate field cannot forge a line or a column.
+//
+// Invalid UTF-8 bytes are replaced as well. An IA5-unchecked AIA or CRL
+// general name can carry a raw 0x9B byte, which is the 8-bit CSI; a range
+// loop yields utf8.RuneError with size 1 for it and IsControl(U+FFFD) is
+// false, so a predicate that only tested IsControl would let it through.
+//
+// Printable text, including emoji and non-ASCII names, passes through
+// unchanged.
+func SanitizeField(s string) string {
+	if !fieldNeedsSanitizing(s) {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isDisallowedFieldRune(r, size) {
+			// Replace the whole rune: a C1 control is two UTF-8 bytes, so
+			// advancing by one would re-decode its trailing byte as invalid
+			// and emit a second U+FFFD. size is always >= 1 here because the
+			// loop condition guarantees a non-empty remainder.
+			sb.WriteRune('\uFFFD')
+			i += size
+			continue
+		}
+		sb.WriteString(s[i : i+size])
+		i += size
+	}
+	return sb.String()
+}
+
+// SanitizeFields applies SanitizeField to every element, returning a new
+// slice. Nil and empty input return nil.
+func SanitizeFields(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = SanitizeField(s)
+	}
+	return out
+}
+
+// fieldNeedsSanitizing reports whether s contains any rune the field
+// sanitizer would replace, so the common clean case avoids allocating.
+func fieldNeedsSanitizing(s string) bool {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isDisallowedFieldRune(r, size) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+// isDisallowedFieldRune reports whether a decoded rune is a control
+// character, or an invalid byte (RuneError decoded at width 1).
+func isDisallowedFieldRune(r rune, size int) bool {
+	if r == utf8.RuneError && size == 1 {
+		return true
+	}
+	return unicode.IsControl(r)
 }
 
 // HasAnyNameConstraints reports whether cert declares any RFC 5280 §4.2.1.10
@@ -209,17 +282,20 @@ func BuildNameConstraintLines(cert *x509.Certificate, width int) []string {
 	var out []string
 	out = append(out, "NC: yes"+crit)
 
-	out = append(out, WrapList("PermDNS", cert.PermittedDNSDomains, width)...)
-	out = append(out, WrapList("ExclDNS", cert.ExcludedDNSDomains, width)...)
+	// Every component below is certificate-derived, and a rendered line must
+	// not let one forge a line or a column in the box, so sanitize each value
+	// before WrapList measures and lays it out.
+	out = append(out, WrapList("PermDNS", SanitizeFields(cert.PermittedDNSDomains), width)...)
+	out = append(out, WrapList("ExclDNS", SanitizeFields(cert.ExcludedDNSDomains), width)...)
 
-	out = append(out, WrapList("PermIP", IPNetListToStrings(cert.PermittedIPRanges), width)...)
-	out = append(out, WrapList("ExclIP", IPNetListToStrings(cert.ExcludedIPRanges), width)...)
+	out = append(out, WrapList("PermIP", SanitizeFields(IPNetListToStrings(cert.PermittedIPRanges)), width)...)
+	out = append(out, WrapList("ExclIP", SanitizeFields(IPNetListToStrings(cert.ExcludedIPRanges)), width)...)
 
-	out = append(out, WrapList("PermEmail", cert.PermittedEmailAddresses, width)...)
-	out = append(out, WrapList("ExclEmail", cert.ExcludedEmailAddresses, width)...)
+	out = append(out, WrapList("PermEmail", SanitizeFields(cert.PermittedEmailAddresses), width)...)
+	out = append(out, WrapList("ExclEmail", SanitizeFields(cert.ExcludedEmailAddresses), width)...)
 
-	out = append(out, WrapList("PermURI", cert.PermittedURIDomains, width)...)
-	out = append(out, WrapList("ExclURI", cert.ExcludedURIDomains, width)...)
+	out = append(out, WrapList("PermURI", SanitizeFields(cert.PermittedURIDomains), width)...)
+	out = append(out, WrapList("ExclURI", SanitizeFields(cert.ExcludedURIDomains), width)...)
 
 	return out
 }

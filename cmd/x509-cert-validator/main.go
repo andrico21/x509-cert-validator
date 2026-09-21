@@ -468,8 +468,8 @@ func main() {
 					self = " (self-signed)"
 				}
 
-				logNormal("%s[%d] Subject: %s%s\n", prefix, displayIdx, subCN, self)
-				logNormal("%s    Issuer:  %s\n", prefix, issCN)
+				logNormal("%s[%d] Subject: %s%s\n", prefix, displayIdx, display.SanitizeField(subCN), self)
+				logNormal("%s    Issuer:  %s\n", prefix, display.SanitizeField(issCN))
 				if showAllFP {
 					logNormal("%s    FP(md5):    %x\n", prefix, md5.Sum(cert.Raw)) // #nosec G401 -- diagnostic fingerprint, not used for cryptographic verification.
 				}
@@ -758,7 +758,7 @@ func exitErr(err error) {
 		id := "UNKNOWN"
 		sn := "?"
 		if targetLeaf != nil {
-			id = targetLeaf.Subject.CommonName
+			id = display.SanitizeField(targetLeaf.Subject.CommonName)
 			if id == "" {
 				id = "No-CN"
 			}
@@ -779,7 +779,7 @@ func exitSuccess() {
 		id := "UNKNOWN"
 		sn := "?"
 		if targetLeaf != nil {
-			id = targetLeaf.Subject.CommonName
+			id = display.SanitizeField(targetLeaf.Subject.CommonName)
 			if id == "" {
 				id = "No-CN"
 			}
@@ -794,14 +794,14 @@ func exitSuccess() {
 func printShortID(role string, cert *x509.Certificate) {
 	flagUnsupportedIfNeeded(cert)
 	hash := sha256.Sum256(cert.Raw)
-	logNormal("[%s] %s... (CN=%s, Key=%s)\n", role, hex.EncodeToString(hash[:])[:8], cert.Subject.CommonName, x509util.CertPublicKeySummary(cert))
+	logNormal("[%s] %s... (CN=%s, Key=%s)\n", role, hex.EncodeToString(hash[:])[:8], display.SanitizeField(cert.Subject.CommonName), x509util.CertPublicKeySummary(cert))
 }
 
 func printCertDetails(label string, cert *x509.Certificate) {
 	flagUnsupportedIfNeeded(cert)
 	logNormal("\n=== %s Certificate Details ===\n", label)
-	logNormal("Subject:     %s\n", cert.Subject)
-	logNormal("Issuer:      %s\n", cert.Issuer)
+	logNormal("Subject:     %s\n", display.SanitizeField(cert.Subject.String()))
+	logNormal("Issuer:      %s\n", display.SanitizeField(cert.Issuer.String()))
 	if showAllFP {
 		logNormal("FP(md5):     %x\n", md5.Sum(cert.Raw)) // #nosec G401 -- diagnostic fingerprint, not used for cryptographic verification.
 	}
@@ -819,13 +819,13 @@ func printCertDetails(label string, cert *x509.Certificate) {
 	logNormal("Sig Alg:     %s\n", cert.SignatureAlgorithm)
 
 	if len(cert.DNSNames) > 0 {
-		logNormal("SAN (DNS):   %v\n", cert.DNSNames)
+		logNormal("SAN (DNS):   %v\n", display.SanitizeFields(cert.DNSNames))
 	}
 	if len(cert.IssuingCertificateURL) > 0 {
-		logNormal("AIA (Issuer): %v\n", cert.IssuingCertificateURL)
+		logNormal("AIA (Issuer): %v\n", display.SanitizeFields(cert.IssuingCertificateURL))
 	}
 	if len(cert.CRLDistributionPoints) > 0 {
-		logNormal("CRL DPs:     %v\n", cert.CRLDistributionPoints)
+		logNormal("CRL DPs:     %v\n", display.SanitizeFields(cert.CRLDistributionPoints))
 	}
 
 	// Name Constraints (requested)
@@ -1083,10 +1083,14 @@ func printChainGraph(chain []*x509.Certificate) {
 			issCN = "No-CN"
 		}
 
+		// Sanitize the certificate-derived fields BEFORE the width pass so the
+		// box is measured and padded against what is actually printed: a
+		// replaced control grows from 1 to 3 bytes, which would otherwise
+		// misalign the border.
 		info := certInfo{
 			role:  role,
-			subCN: subCN,
-			issCN: issCN,
+			subCN: display.SanitizeField(subCN),
+			issCN: display.SanitizeField(issCN),
 			key:   x509util.CertPublicKeySummary(cert),
 			sig:   cert.SignatureAlgorithm.String(),
 			sn:    x509util.SerialHex(cert),
@@ -1094,7 +1098,7 @@ func printChainGraph(chain []*x509.Certificate) {
 		}
 		infos = append(infos, info)
 
-		for _, s := range []string{role, "CN: " + subCN, "Issuer: " + issCN, "Key: " + info.key, "Sig: " + info.sig, "SN: " + info.sn} {
+		for _, s := range []string{info.role, "CN: " + info.subCN, "Issuer: " + info.issCN, "Key: " + info.key, "Sig: " + info.sig, "SN: " + info.sn} {
 			if len(s) > maxLen {
 				maxLen = len(s)
 			}
@@ -1156,31 +1160,31 @@ func printNameConstraints(prefix string, cert *x509.Certificate) {
 	logNormal("%s    Name Constraints:%s\n", prefix, crit)
 
 	if len(cert.PermittedDNSDomains) > 0 {
-		logNormal("%s      Permitted DNS:   %v\n", prefix, cert.PermittedDNSDomains)
+		logNormal("%s      Permitted DNS:   %v\n", prefix, display.SanitizeFields(cert.PermittedDNSDomains))
 	}
 	if len(cert.ExcludedDNSDomains) > 0 {
-		logNormal("%s      Excluded DNS:    %v\n", prefix, cert.ExcludedDNSDomains)
+		logNormal("%s      Excluded DNS:    %v\n", prefix, display.SanitizeFields(cert.ExcludedDNSDomains))
 	}
 
 	if len(cert.PermittedIPRanges) > 0 {
-		logNormal("%s      Permitted IP:    %v\n", prefix, display.IPNetListToStrings(cert.PermittedIPRanges))
+		logNormal("%s      Permitted IP:    %v\n", prefix, display.SanitizeFields(display.IPNetListToStrings(cert.PermittedIPRanges)))
 	}
 	if len(cert.ExcludedIPRanges) > 0 {
-		logNormal("%s      Excluded IP:     %v\n", prefix, display.IPNetListToStrings(cert.ExcludedIPRanges))
+		logNormal("%s      Excluded IP:     %v\n", prefix, display.SanitizeFields(display.IPNetListToStrings(cert.ExcludedIPRanges)))
 	}
 
 	if len(cert.PermittedEmailAddresses) > 0 {
-		logNormal("%s      Permitted Email: %v\n", prefix, cert.PermittedEmailAddresses)
+		logNormal("%s      Permitted Email: %v\n", prefix, display.SanitizeFields(cert.PermittedEmailAddresses))
 	}
 	if len(cert.ExcludedEmailAddresses) > 0 {
-		logNormal("%s      Excluded Email:  %v\n", prefix, cert.ExcludedEmailAddresses)
+		logNormal("%s      Excluded Email:  %v\n", prefix, display.SanitizeFields(cert.ExcludedEmailAddresses))
 	}
 
 	if len(cert.PermittedURIDomains) > 0 {
-		logNormal("%s      Permitted URI:   %v\n", prefix, cert.PermittedURIDomains)
+		logNormal("%s      Permitted URI:   %v\n", prefix, display.SanitizeFields(cert.PermittedURIDomains))
 	}
 	if len(cert.ExcludedURIDomains) > 0 {
-		logNormal("%s      Excluded URI:    %v\n", prefix, cert.ExcludedURIDomains)
+		logNormal("%s      Excluded URI:    %v\n", prefix, display.SanitizeFields(cert.ExcludedURIDomains))
 	}
 }
 

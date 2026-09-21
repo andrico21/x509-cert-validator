@@ -1,9 +1,12 @@
 // This file adds the -inspect summary-table renderer. It lives in
 // display alongside the other pure formatting helpers and returns a
 // string (no I/O) so the caller owns stdout and the TTY/-no-color
-// decision. Certificate-derived text is passed through SanitizeTerminal
+// decision. Certificate-derived text is passed through SanitizeField
 // per-cell BEFORE any ANSI color is applied, so untrusted fields cannot
-// inject escape sequences while the color codes we add remain intact.
+// inject escape sequences or forge rows while the color codes we add
+// remain intact. SanitizeField (not SanitizeTerminal) is required here:
+// each cell is a single untrusted value, and the table's own newlines
+// come from the renderer, not from the data.
 // Callers MUST print the returned string directly and MUST NOT re-run it
 // through SanitizeTerminal (that would strip the color codes).
 
@@ -87,16 +90,16 @@ func RenderSummaryTable(infos []certinfo.CertInfo, useColor bool) string {
 		}
 		row := []cell{
 			{text: fmt.Sprintf("%d", in.Index)},
-			{text: SanitizeTerminal(in.Role)},
-			{text: SanitizeTerminal(cnOr(in.SubjectCN, in.Subject))},
-			{text: SanitizeTerminal(cnOr(in.IssuerCN, in.Issuer))},
+			{text: SanitizeField(in.Role)},
+			{text: SanitizeField(cnOr(in.SubjectCN, in.Subject))},
+			{text: SanitizeField(cnOr(in.IssuerCN, in.Issuer))},
 			{text: in.NotAfter.Format("2006-01-02 15:04")},
 			{text: RemainingLabel(in), color: clr},
 			{text: ExpiryLabel(in), color: clr},
 			{text: certinfo.ShortFP(in.FingerprintSHA256)},
 		}
 		if hasSource {
-			row = append([]cell{{text: SanitizeTerminal(in.Source)}}, row...)
+			row = append([]cell{{text: SanitizeField(in.Source)}}, row...)
 		}
 		rows = append(rows, row)
 	}

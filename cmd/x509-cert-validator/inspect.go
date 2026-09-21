@@ -157,12 +157,12 @@ func shouldColor(noColor bool) bool {
 // JSON output) so untrusted fields cannot inject terminal escapes.
 func renderFullDetail(in certinfo.CertInfo) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n%s\n", display.SanitizeTerminal(fmt.Sprintf("== Certificate %d (%s) ==", in.Index, cnOrSubject(in))))
+	fmt.Fprintf(&b, "\n%s\n", display.SanitizeTerminal(fmt.Sprintf("== Certificate %d (%s) ==", in.Index, display.SanitizeField(cnOrSubject(in)))))
 	kv := func(k, v string) {
 		if v == "" {
 			return
 		}
-		fmt.Fprintf(&b, "%-18s%s\n", k, display.SanitizeTerminal(v))
+		fmt.Fprintf(&b, "%-18s%s\n", k, display.SanitizeField(v))
 	}
 	kv("Index", fmt.Sprintf("%d", in.Index))
 	kv("Role", in.Role)

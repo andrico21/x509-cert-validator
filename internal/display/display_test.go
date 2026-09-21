@@ -93,3 +93,87 @@ func TestSanitizeTerminalFastPathReturnsSameString(t *testing.T) {
 		t.Errorf("clean input must be returned unchanged")
 	}
 }
+
+func TestSanitizeField(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"clean ascii", "CN=example.com", "CN=example.com"},
+		{"c0 escape", "\x1b[31mevil", "\uFFFD[31mevil"},
+		{"del", "x\x7fy", "x\uFFFDy"},
+		{"null", "a\x00b", "a\uFFFDb"},
+		// C1 as UTF-8. U+009B is the 8-bit CSI, U+009D the 8-bit OSC.
+		{"c1 as utf8 (csi)", "c\u009b31m", "c\uFFFD31m"},
+		{"c1 as utf8 (osc)", "c\u009d2J", "c\uFFFD2J"},
+		// C1 as a raw invalid byte: the carrier an IA5-unchecked AIA/CRL
+		// general name can supply. A range loop yields RuneError/size 1 here,
+		// so a predicate testing only unicode.IsControl would miss it.
+		{"c1 as raw byte", "c\x9b31m", "c\uFFFD31m"},
+		{"invalid byte alone", "\x80", "\uFFFD"},
+		// Unlike SanitizeTerminal, a field has no legitimate line breaks.
+		{"lf", "a\nb", "a\uFFFDb"},
+		{"cr", "a\rb", "a\uFFFDb"},
+		{"tab", "a\tb", "a\uFFFDb"},
+		{"crlf", "a\r\nb", "a\uFFFD\uFFFDb"},
+		{"printable and multibyte preserved", "⚠️ привет 🙂 日本語", "⚠️ привет 🙂 日本語"},
+		{"genuine replacement rune preserved", "a\uFFFDb", "a\uFFFDb"},
+	}
+	for _, c := range cases {
+		if got := SanitizeField(c.in); got != c.want {
+			t.Errorf("%s: SanitizeField(%q): want %q, got %q", c.name, c.in, c.want, got)
+		}
+	}
+}
+
+func TestSanitizeFieldFastPathReturnsSameString(t *testing.T) {
+	in := strings.Repeat("clean ", 10)
+	if got := SanitizeField(in); got != in {
+		t.Errorf("clean input must be returned unchanged")
+	}
+}
+
+// SanitizeTerminal is applied to already-composed messages, so its allow-list
+// for \n, \r and \t is load-bearing: tightening it here would strip every
+// formatter newline and collapse all human output into one line. Pinned so a
+// later edit cannot silently do that.
+func TestSanitizeTerminalUnchanged(t *testing.T) {
+	critical := []struct {
+		in   string
+		want string
+	}{
+		{"a\nb", "a\nb"},
+		{"a\rb", "a\rb"},
+		{"a\tb", "a\tb"},
+		{"line one\nline two\n", "line one\nline two\n"},
+	}
+	for _, c := range critical {
+		if got := SanitizeTerminal(c.in); got != c.want {
+			t.Errorf("SanitizeTerminal(%q) = %q, want %q: the composed-message allow-list changed", c.in, got, c.want)
+		}
+	}
+	// And the documented C0/DEL behaviour stays put.
+	if got := SanitizeTerminal("\x1b[31m"); got != "\uFFFD[31m" {
+		t.Errorf("SanitizeTerminal C0 handling changed: got %q", got)
+	}
+}
+
+func TestSanitizeFields(t *testing.T) {
+	if got := SanitizeFields(nil); got != nil {
+		t.Errorf("nil input must return nil, got %#v", got)
+	}
+	if got := SanitizeFields([]string{}); got != nil {
+		t.Errorf("empty input must return nil, got %#v", got)
+	}
+	got := SanitizeFields([]string{"ok", "a\nb", "c\u009bd"})
+	want := []string{"ok", "a\uFFFDb", "c\uFFFDd"}
+	if len(got) != len(want) {
+		t.Fatalf("SanitizeFields returned %d elements, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("SanitizeFields[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

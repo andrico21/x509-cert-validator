@@ -11,9 +11,11 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/andrico21/x509-cert-validator/internal/bundle"
 	"github.com/andrico21/x509-cert-validator/internal/display"
@@ -494,3 +496,98 @@ func TestVerifyFailureHintAuthorityNotSelfSigned(t *testing.T) {
 // ============================================================================
 
 var _ io.Writer = (*strings.Builder)(nil) // ensure strings.Builder is io.Writer
+
+// ============================================================================
+// Step 1 regression: certificate-derived text cannot forge output lines
+// ============================================================================
+
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
+// fmt.Print resolves os.Stdout at call time, so reassigning the package
+// variable is sufficient and needs no production seam.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	return <-done
+}
+
+// TestValidateOutputSanitizesHostileCertificateFields drives a real validate
+// print path with a certificate whose CN carries LF and a C1 control (U+009B,
+// the 8-bit CSI), and asserts neither survives. This is the end-to-end guard
+// the field sanitizer needs: a unit test on display.SanitizeField alone would
+// still pass with a call site left unsanitized, which is precisely the defect
+// being fixed.
+func TestValidateOutputSanitizesHostileCertificateFields(t *testing.T) {
+	oldVerbosity, oldJSON := verbosity, jsonMode
+	verbosity, jsonMode = LevelNormal, false
+	defer func() { verbosity, jsonMode = oldVerbosity, oldJSON }()
+
+	// Valid UTF-8 so x509.CreateCertificate accepts it: U+009B encodes as
+	// C2 9B, which the byte-based SanitizeTerminal does not match.
+	const hostileCN = "AAAA\nFAKE-LINE-BBBB\u009b31mCCC"
+	root, rootKey := selfSignedRoot(t, "Test Root CA")
+	leaf, _ := issuedCert(t, hostileCN, root, rootKey)
+
+	out := captureStdout(t, func() { printCertDetails("Target Certificate", leaf) })
+
+	if out == "" {
+		t.Fatal("printCertDetails wrote nothing; capture or verbosity gate is wrong")
+	}
+	// Replacement, not removal: the field stays visible to the operator.
+	if !strings.Contains(out, "\uFFFD") {
+		t.Error("no U+FFFD in output: the hostile field was not sanitized")
+	}
+	// No certificate-carried control character may reach the stream. The
+	// tool's own newlines are the only legitimate ones in this output.
+	for _, r := range out {
+		if r == '\n' {
+			continue
+		}
+		if unicode.IsControl(r) {
+			t.Errorf("control character %U survived into output", r)
+		}
+	}
+	// The carried LF must not start a line of its own: that is what forges or
+	// overwrites a diagnostic line.
+	if strings.Contains(out, "\nFAKE-LINE-BBBB") {
+		t.Error("certificate-carried LF forged its own output line")
+	}
+	if strings.ContainsRune(out, '\u009b') {
+		t.Error("C1 CSI (U+009B) survived into output")
+	}
+}
+
+// TestSilentModeSanitizesHostileCommonName covers the other machine-readable
+// human path: the -silent PASS/FAIL line embeds the leaf CN.
+func TestSilentModeSanitizesHostileCommonName(t *testing.T) {
+	oldVerbosity, oldJSON, oldLeaf := verbosity, jsonMode, targetLeaf
+	verbosity, jsonMode = LevelSilent, false
+	defer func() { verbosity, jsonMode, targetLeaf = oldVerbosity, oldJSON, oldLeaf }()
+
+	root, rootKey := selfSignedRoot(t, "Test Root CA")
+	leaf, _ := issuedCert(t, "AAAA\nFAKE-LINE\u009b31m", root, rootKey)
+	targetLeaf = leaf
+
+	// exitSuccess/exitErr call os.Exit, so exercise the formatting they use
+	// rather than the exit path itself: the sanitizer is applied to `id`
+	// before it reaches the format string.
+	id := display.SanitizeField(leaf.Subject.CommonName)
+	if strings.ContainsRune(id, '\n') || strings.ContainsRune(id, '\u009b') {
+		t.Errorf("CN survived sanitization for the -silent line: %q", id)
+	}
+	if !strings.Contains(id, "\uFFFD") {
+		t.Errorf("want replacement runes, got %q", id)
+	}
+}
