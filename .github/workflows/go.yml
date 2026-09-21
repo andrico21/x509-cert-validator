@@ -16,7 +16,7 @@ permissions:
 jobs:
   lint:
     name: Lint (gofmt, vet, staticcheck, gosec)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
@@ -55,7 +55,7 @@ jobs:
 
   build:
     name: Build / Vulncheck / Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: lint
     steps:
       - uses: actions/checkout@v7
@@ -79,7 +79,7 @@ jobs:
 
   integration:
     name: Integration tests (tests.sh)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: build
     steps:
       - uses: actions/checkout@v7
